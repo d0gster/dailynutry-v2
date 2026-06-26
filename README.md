@@ -127,6 +127,21 @@ router e dos guardrails é coberto pelos testes.
 
 ---
 
+## Qualidade
+
+```bash
+git config core.hooksPath .githooks   # habilita o gate de pre-commit (uma vez)
+```
+
+O hook em [`.githooks/pre-commit`](.githooks/pre-commit) roda **typecheck + lint
+(+ testes no gateway)** apenas no(s) projeto(s) com mudanças staged, e **bloqueia
+o commit** se algo falhar.
+
+- **Gateway:** `npm run typecheck` · `npm run lint` (ESLint + typescript-eslint) ·
+  `npm test` (Vitest — unit dos módulos puros com dados reais + integração da rota,
+  usando test doubles só para condições de erro, nunca dados fabricados).
+- **App:** `npm run typecheck` · `npm run lint` (eslint-config-expo).
+
 ## Status
 
 - ✅ Provider abstraction + fallback

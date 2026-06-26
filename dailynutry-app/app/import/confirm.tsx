@@ -4,7 +4,7 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { T } from '../../constants/tokens';
 import { Ic } from '../../constants/icons';
-import { Button, Card, Chip } from '../../components/ui';
+import { Button, Card } from '../../components/ui';
 import { useDietStore } from '../../stores/diet-store';
 import { DietPlan } from '../../constants/foods';
 

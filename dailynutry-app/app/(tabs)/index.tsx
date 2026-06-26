@@ -12,7 +12,6 @@ import {
   ScrollView,
   StyleSheet,
   Pressable,
-  Dimensions,
   Modal,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -22,8 +21,6 @@ import { Ic } from '../../constants/icons';
 import { Chip } from '../../components/ui';
 import { useFocusEffect } from '@react-navigation/native';
 import { useDietStore } from '../../stores/diet-store';
-
-const { width } = Dimensions.get('window');
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -233,7 +230,7 @@ export default function HomeScreen() {
               </View>
               <Text style={styles.modalTitle}>Eita pois!</Text>
               <Text style={styles.modalText}>
-                Tu ainda não registrou o plano alimentar... let's que bora lá!
+                Tu ainda não registrou o plano alimentar... bora lá!
               </Text>
               <View style={styles.modalBtns}>
                 <Pressable

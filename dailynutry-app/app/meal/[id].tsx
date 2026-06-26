@@ -6,15 +6,13 @@
  * and "mark as eaten" functionality.
  */
 
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
   ScrollView,
   StyleSheet,
   Pressable,
-  Dimensions,
-  FlatList,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,8 +20,6 @@ import { T } from '../../constants/tokens';
 import { Ic } from '../../constants/icons';
 import { Button } from '../../components/ui';
 import { useDietStore } from '../../stores/diet-store';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function MealDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();

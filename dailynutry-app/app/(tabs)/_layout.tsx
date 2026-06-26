@@ -7,7 +7,7 @@
 
 import React from 'react';
 import { Tabs } from 'expo-router';
-import { View, StyleSheet, Platform } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { T } from '../../constants/tokens';
 import { Ic } from '../../constants/icons';

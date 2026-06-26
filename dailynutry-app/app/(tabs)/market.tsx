@@ -15,7 +15,6 @@ import {
 } from 'react-native';
 import { T } from '../../constants/tokens';
 import { Ic } from '../../constants/icons';
-import { Card, Button, Chip } from '../../components/ui';
 
 const SHOPPING = [
   {

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Pre-commit quality gate. Blocks the commit when typecheck/lint/tests fail.
+# Runs only for the subproject(s) with staged changes. Enable once with:
+#   git config core.hooksPath .githooks
+
+staged=$(git diff --cached --name-only)
+fail=0
+
+if echo "$staged" | grep -q '^ai-gateway/'; then
+  echo "▶ ai-gateway: typecheck + lint + test"
+  ( cd ai-gateway && npm run typecheck && npm run lint && npm test ) || fail=1
+fi
+
+if echo "$staged" | grep -q '^dailynutry-app/'; then
+  echo "▶ dailynutry-app: typecheck + lint"
+  ( cd dailynutry-app && npm run typecheck && npm run lint ) || fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "✗ Verificações falharam — commit abortado. Corrija e tente de novo."
+  exit 1
+fi

@@ -5,7 +5,7 @@
  */
 
 import React from 'react';
-import { Pressable, Text, StyleSheet, ViewStyle, View } from 'react-native';
+import { Pressable, Text, ViewStyle } from 'react-native';
 import { T } from '../../constants/tokens';
 
 type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'cream';

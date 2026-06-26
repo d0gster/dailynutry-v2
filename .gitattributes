@@ -1,0 +1,3 @@
+# Git hooks must keep LF endings so the shebang works when run via Git Bash on
+# Windows. (Other files keep git's default handling.)
+.githooks/** text eol=lf

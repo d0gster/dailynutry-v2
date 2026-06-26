@@ -180,7 +180,7 @@ export async function parseDietboxImages(
     
     try {
       return JSON.parse(textResponse) as Partial<DietPlan>;
-    } catch (parseErr) {
+    } catch {
       throw new Error('Erro ao parsear JSON retornado pelo Gemini.');
     }
   } finally {

@@ -6,7 +6,9 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@expo-google-fonts/instrument-serif": "^0.4.1",
@@ -39,6 +41,8 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
+    "eslint": "^9.39.4",
+    "eslint-config-expo": "^56.0.4",
     "react-test-renderer": "19.1.0",
     "typescript": "~5.9.2"
   },
