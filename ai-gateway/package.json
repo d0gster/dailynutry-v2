@@ -8,6 +8,9 @@
     "build": "next build",
     "start": "next start -p 4000",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "db:init": "node --experimental-strip-types src/db/init.ts"
   },
   "dependencies": {
@@ -19,10 +22,14 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.10.5",
     "@types/pg": "^8.11.10",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "typescript": "^5.7.3"
+    "eslint": "^10.5.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.62.0",
+    "vitest": "^4.1.9"
   }
 }
