@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Builds
+.next/
+dist/
+out/
+web-build/
+
+# Expo
+.expo/
+expo-env.d.ts
+
+# Env — NEVER commit real keys
+.env
+.env*.local
+
+# Logs
+*.log
+npm-debug.*
+
+# TypeScript
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Local dev launch scripts (machine-specific)
+start-backend.bat
+start-frontend.bat
