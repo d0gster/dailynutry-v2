@@ -3,26 +3,54 @@ import { z } from 'zod';
 import { buildProviderChain, getMaxRepairAttempts } from '@/core/config';
 import { runExtraction } from '@/core/orchestrator';
 import { validateAndRepair, GuardrailError } from '@/core/guardrail';
+import { enrichPlan } from '@/core/enrichment';
 import { EXTRACTION_SYSTEM_PROMPT } from '@/core/prompt';
 import { estimateCost, addUsage } from '@/core/cost';
 import { PRICING_VERSION } from '@/core/pricing';
 import { ProviderError } from '@/core/types';
-import { imagesHash, getCached, setCached, checkRateLimit } from '@/cache/redis';
+import { resolveCaller } from '@/core/device-auth';
+import { serverError } from '@/core/errors';
+import {
+  enforceContentLength,
+  MAX_IMAGE_BASE64_CHARS,
+  MAX_IMAGES,
+} from '@/core/limits';
+import {
+  imagesHash,
+  getCached,
+  setCached,
+  checkRateLimit,
+  rateLimitHeaders,
+} from '@/cache/redis';
 import { persistRequestLog } from '@/db/request-log';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
+/**
+ * Model ids are interpolated into the provider's request URL, so an unvalidated
+ * value could reach paths other than the intended one. Restrict to the shape
+ * real model names take.
+ */
+const MODEL_ID = /^[a-zA-Z0-9._-]{1,64}$/;
+
 const BodySchema = z.object({
   images: z
     .array(
       z.object({
-        base64: z.string().min(1),
+        base64: z
+          .string()
+          .min(1)
+          .max(MAX_IMAGE_BASE64_CHARS, 'image is too large'),
         mimeType: z.enum(['image/jpeg', 'image/png']),
       }),
     )
     .min(1, 'at least one image is required')
-    .max(8, 'too many images'),
+    .max(MAX_IMAGES, 'too many images'),
+  overrideModel: z
+    .string()
+    .regex(MODEL_ID, 'overrideModel is not a valid model id')
+    .optional(),
 });
 
 const RATE_LIMIT = 20; // requests
@@ -31,15 +59,24 @@ const RATE_WINDOW = 60; // seconds
 export async function POST(req: NextRequest) {
   const started = Date.now();
 
-  // ── Auth ─────────────────────────────────────────────────────────────────
-  const apiKey = req.headers.get('x-api-key');
-  if (!process.env.GATEWAY_API_KEY || apiKey !== process.env.GATEWAY_API_KEY) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  // ── Auth: app key + device identity (and its daily quota). ───────────────
+  const auth = await resolveCaller(req);
+  if (!auth.ok) return auth.response;
 
-  // ── Rate limit (per gateway key). ────────────────────────────────────────
-  if (!(await checkRateLimit(apiKey, RATE_LIMIT, RATE_WINDOW))) {
-    return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  // ── Reject over-sized bodies before buffering them into memory. ──────────
+  const tooLarge = enforceContentLength(req);
+  if (tooLarge) return tooLarge;
+
+  // ── Rate limit, scoped to the individual device rather than the shared
+  //    gateway key, so one heavy caller cannot spend everyone else's budget.
+  //    Falls back to an IP bucket until device auth is enforced. ────────────
+  const limit = await checkRateLimit(auth.caller.identity, RATE_LIMIT, RATE_WINDOW);
+  const limitHeaders = rateLimitHeaders(limit);
+  if (!limit.allowed) {
+    return NextResponse.json(
+      { error: 'Rate limit exceeded', retryAfterSeconds: limit.retryAfterSeconds },
+      { status: 429, headers: limitHeaders },
+    );
   }
 
   // ── Validate request body. ───────────────────────────────────────────────
@@ -47,18 +84,39 @@ export async function POST(req: NextRequest) {
   try {
     body = BodySchema.parse(await req.json());
   } catch (err) {
+    // Validation failures describe the caller's OWN request, so the field-level
+    // detail is safe and genuinely useful. Anything else here (malformed JSON,
+    // a body that never arrived) is reported without its internal message.
+    if (err instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Invalid request',
+          issues: err.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+        },
+        { status: 400, headers: limitHeaders },
+      );
+    }
     return NextResponse.json(
-      { error: 'Invalid request', detail: (err as Error).message },
-      { status: 400 },
+      { error: 'Request body could not be parsed as JSON' },
+      { status: 400, headers: limitHeaders },
     );
   }
 
   const images = body.images;
-  const cacheKey = imagesHash(images);
+  const baseCacheKey = imagesHash(images);
+  const cacheKey = body.overrideModel
+    ? `${baseCacheKey}:model:${body.overrideModel}`
+    : baseCacheKey;
 
-  // ── Cache: identical re-imports are instant and free. ────────────────────
+  // ── Cache: identical re-imports skip the LLM entirely. ───────────────────
+  //    What's cached is the EXTRACTED plan, before enrichment. Enrichment now
+  //    depends on the caller (a device sees its own yield corrections), so
+  //    caching the enriched result would serve one device's numbers to the
+  //    next. Extraction is the expensive part; enriching again costs two
+  //    queries.
   const cached = await getCached(cacheKey);
   if (cached) {
+    const enrichedFromCache = await enrichPlan(cached, auth.caller.deviceId);
     await persistRequestLog({
       success: true,
       providerUsed: null,
@@ -74,17 +132,20 @@ export async function POST(req: NextRequest) {
       attempts: [],
       repairs: [],
     });
-    return NextResponse.json({ plan: cached, meta: { cacheHit: true } });
+    return NextResponse.json(
+      { plan: enrichedFromCache, meta: { cacheHit: true } },
+      { headers: limitHeaders },
+    );
   }
 
-  const chain = buildProviderChain();
+  const chain = buildProviderChain(process.env, body.overrideModel);
   if (chain.length === 0) {
     return NextResponse.json(
       {
         error: 'No LLM provider configured',
         detail: 'Set GEMINI_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) on the gateway.',
       },
-      { status: 503 },
+      { status: 503, headers: limitHeaders },
     );
   }
 
@@ -102,11 +163,15 @@ export async function POST(req: NextRequest) {
       getMaxRepairAttempts(),
     );
 
-    // ── 3. Cost: vision usage + repair usage. ──────────────────────────────
+    // ── 3. Cache the extraction, THEN enrich per caller. ───────────────────
+    //    Order matters: see the cache-read comment above.
+    await setCached(cacheKey, guarded.plan);
+    const enriched = await enrichPlan(guarded.plan, auth.caller.deviceId);
+
+    // ── 4. Cost: vision usage + repair usage. ──────────────────────────────
     const totalUsage = addUsage(extraction.completion.usage, guarded.repairUsage);
     const cost = estimateCost(extraction.completion.model, totalUsage);
 
-    await setCached(cacheKey, guarded.plan);
     await persistRequestLog({
       success: true,
       providerUsed: extraction.providerUsed.name,
@@ -124,19 +189,22 @@ export async function POST(req: NextRequest) {
       repairs: guarded.repairs,
     });
 
-    return NextResponse.json({
-      plan: guarded.plan,
-      meta: {
-        cacheHit: false,
-        providerUsed: extraction.providerUsed.name,
-        model: extraction.completion.model,
-        fallbackReason: extraction.fallbackReason ?? null,
-        attempts: extraction.attempts,
-        repairs: guarded.repairs.map((r) => ({ attempt: r.attempt, provider: r.provider })),
-        cost: { ...cost, pricingVersion: PRICING_VERSION },
-        latencyMs: Date.now() - started,
+    return NextResponse.json(
+      {
+        plan: enriched,
+        meta: {
+          cacheHit: false,
+          providerUsed: extraction.providerUsed.name,
+          model: extraction.completion.model,
+          fallbackReason: extraction.fallbackReason ?? null,
+          attempts: extraction.attempts,
+          repairs: guarded.repairs.map((r) => ({ attempt: r.attempt, provider: r.provider })),
+          cost: { ...cost, pricingVersion: PRICING_VERSION },
+          latencyMs: Date.now() - started,
+        },
       },
-    });
+      { headers: limitHeaders },
+    );
   } catch (err) {
     const isGuardrail = err instanceof GuardrailError;
     const status = err instanceof ProviderError && !err.retryable ? 502 : 500;
@@ -156,12 +224,11 @@ export async function POST(req: NextRequest) {
       repairs: [],
       error: (err as Error).message,
     });
-    return NextResponse.json(
-      {
-        error: isGuardrail ? 'Output failed validation and could not be repaired' : 'Extraction failed',
-        detail: (err as Error).message,
-      },
-      { status },
+    return serverError(
+      'extract',
+      err,
+      isGuardrail ? 'Output failed validation and could not be repaired' : 'Extraction failed',
+      { status, headers: limitHeaders },
     );
   }
 }

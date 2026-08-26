@@ -18,8 +18,15 @@ function num(value: string | undefined, fallback: number): number {
  * Builds the ordered provider chain from the environment. A provider is
  * included only if its key is present, in PROVIDER_ORDER. The result is the
  * single source of truth for "who is primary, who are the fallbacks".
+ *
+ * @param env       – environment variables (defaults to `process.env`)
+ * @param overrideModel – when provided, overrides the Gemini model instead of
+ *                        reading `GEMINI_MODEL` from the environment.
  */
-export function buildProviderChain(env: NodeJS.ProcessEnv = process.env): LLMProvider[] {
+export function buildProviderChain(
+  env: NodeJS.ProcessEnv = process.env,
+  overrideModel?: string,
+): LLMProvider[] {
   const timeoutMs = num(env.LLM_TIMEOUT_MS, 60000);
   const order = (env.PROVIDER_ORDER ?? 'gemini,openai,anthropic')
     .split(',')
@@ -30,7 +37,10 @@ export function buildProviderChain(env: NodeJS.ProcessEnv = process.env): LLMPro
 
   for (const name of order) {
     if (name === 'gemini' && env.GEMINI_API_KEY) {
-      chain.push(new GeminiProvider(env.GEMINI_API_KEY, env.GEMINI_MODEL ?? DEFAULT_MODELS.gemini, timeoutMs));
+      const geminiModel = (overrideModel && overrideModel.length > 0)
+        ? overrideModel
+        : (env.GEMINI_MODEL ?? DEFAULT_MODELS.gemini);
+      chain.push(new GeminiProvider(env.GEMINI_API_KEY, geminiModel, timeoutMs));
     } else if (name === 'openai' && env.OPENAI_API_KEY) {
       chain.push(new OpenAIProvider(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? DEFAULT_MODELS.openai, timeoutMs));
     } else if (name === 'anthropic' && env.ANTHROPIC_API_KEY) {

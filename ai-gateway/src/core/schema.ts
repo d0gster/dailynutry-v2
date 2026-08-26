@@ -28,6 +28,15 @@ export const FoodItemSchema = z.object({
   rawQty: z.number().nonnegative().default(0),
   unit: z.string().default(''),
   householdMeasure: z.string().optional(),
+  // ─── Enrichment fields (populated by enrichPlan, never by the LLM) ─────
+  calories: z.number().optional(),
+  protein: z.number().optional(),
+  carbs: z.number().optional(),
+  fat: z.number().optional(),
+  tacoId: z.number().optional(),
+  yieldFactor: z.number().optional(),
+  cookedQty: z.number().optional(),
+  cookedUnit: z.string().optional(),
 });
 
 export const FoodGroupSchema = z.object({
