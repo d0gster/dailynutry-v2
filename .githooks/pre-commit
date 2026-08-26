@@ -9,11 +9,23 @@ fail=0
 if echo "$staged" | grep -q '^ai-gateway/'; then
   echo "▶ ai-gateway: typecheck + lint + test"
   ( cd ai-gateway && npm run typecheck && npm run lint && npm test ) || fail=1
+
+  # Slower (npm audit signatures hits the registry) — only when dependencies
+  # actually moved, not on every commit that touches the project.
+  if echo "$staged" | grep -qE '^ai-gateway/(package(-lock)?\.json|\.npmrc|supply-chain-allowlist\.json|accepted-risk\.json)$'; then
+    echo "▶ ai-gateway: supply-chain (dependencies changed)"
+    ( cd ai-gateway && npm run supply-chain ) || fail=1
+  fi
 fi
 
 if echo "$staged" | grep -q '^dailynutry-app/'; then
-  echo "▶ dailynutry-app: typecheck + lint"
-  ( cd dailynutry-app && npm run typecheck && npm run lint ) || fail=1
+  echo "▶ dailynutry-app: typecheck + lint + test"
+  ( cd dailynutry-app && npm run typecheck && npm run lint && npm test ) || fail=1
+
+  if echo "$staged" | grep -qE '^dailynutry-app/(package(-lock)?\.json|\.npmrc|supply-chain-allowlist\.json|accepted-risk\.json)$'; then
+    echo "▶ dailynutry-app: supply-chain (dependencies changed)"
+    ( cd dailynutry-app && npm run supply-chain ) || fail=1
+  fi
 fi
 
 if [ "$fail" -ne 0 ]; then

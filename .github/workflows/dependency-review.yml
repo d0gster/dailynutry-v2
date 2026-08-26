@@ -1,0 +1,20 @@
+name: Dependency Review
+
+# Blocks a PR that introduces a dependency with a known high/critical
+# vulnerability, or a new copyleft license — the earliest possible checkpoint,
+# before the package ever reaches a lockfile on main.
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high

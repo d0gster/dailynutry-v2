@@ -1,0 +1,7 @@
+{
+  "_comment": "Packages allowed to carry an install script, checked by ../scripts/supply-chain-check.mjs. ignore-scripts=true means none of these actually run — this list exists so a NEW one shows up as a diff, not silence. Re-run `npm run supply-chain` after any dependency change.",
+  "allowed": [
+    "fsevents@2.3.3",
+    "unrs-resolver@1.12.2"
+  ]
+}

@@ -11,11 +11,12 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:init": "node --experimental-strip-types src/db/init.ts"
+    "db:init": "node --env-file-if-exists=.env --experimental-strip-types src/db/init.ts",
+    "supply-chain": "node ../scripts/supply-chain-check.mjs"
   },
   "dependencies": {
     "ioredis": "^5.4.1",
-    "next": "^15.1.6",
+    "next": "^16.3.0",
     "pg": "^8.13.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

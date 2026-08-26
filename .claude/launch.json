@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ai-gateway",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "ai-gateway",
+      "port": 4000
+    },
+    {
+      "name": "ai-gateway-prod",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start"],
+      "cwd": "ai-gateway",
+      "port": 4000
+    }
+  ]
+}

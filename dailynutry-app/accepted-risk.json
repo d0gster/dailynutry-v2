@@ -1,0 +1,47 @@
+{
+  "_comment": "High/critical npm audit findings deliberately accepted for now, checked by ../scripts/supply-chain-check.mjs. Each entry needs a reason tied to why it can't reach the shipped app, and a reviewBy date — the check hard-fails once that date passes, so this can't quietly become permanent. Full fix for all of these is `npm audit fix --force`, which bumps Expo SDK 54 -> 57 (breaking, needs a real upgrade pass + device testing).",
+  "accepted": [
+    {
+      "id": "GHSA-w3rx-r6r6-pgpr",
+      "package": "image-size",
+      "reason": "Metro bundler dependency (image dimension probing at build time). Runs only on the dev/CI machine during `expo start`/`eas build`, never inside the shipped app bundle.",
+      "reviewBy": "2026-11-24"
+    },
+    {
+      "id": "GHSA-5p2g-fcmc-qvqq",
+      "package": "image-size",
+      "reason": "Same as GHSA-w3rx-r6r6-pgpr — Metro build-time only.",
+      "reviewBy": "2026-11-24"
+    },
+    {
+      "id": "GHSA-qx2v-qp2m-jg93",
+      "package": "postcss",
+      "reason": "Pulled in by @expo/metro-config for processing web-target CSS at bundle time. Not reachable at runtime — the app never parses user-supplied CSS.",
+      "reviewBy": "2026-11-24"
+    },
+    {
+      "id": "GHSA-6g55-p6wh-862q",
+      "package": "postcss",
+      "reason": "Same as GHSA-qx2v-qp2m-jg93 — build-time only.",
+      "reviewBy": "2026-11-24"
+    },
+    {
+      "id": "GHSA-fxqj-rqcc-2cmp",
+      "package": "postcss",
+      "reason": "Same as GHSA-qx2v-qp2m-jg93 — build-time only.",
+      "reviewBy": "2026-11-24"
+    },
+    {
+      "id": "GHSA-r28c-9q8g-f849",
+      "package": "postcss",
+      "reason": "Same as GHSA-qx2v-qp2m-jg93 — build-time only.",
+      "reviewBy": "2026-11-24"
+    },
+    {
+      "id": "GHSA-w5hq-g745-h8pq",
+      "package": "uuid",
+      "reason": "Pulled in by xcode (via @expo/config-plugins), used only during `expo prebuild`/`eas build` to edit the native Xcode project. Never runs on device.",
+      "reviewBy": "2026-11-24"
+    }
+  ]
+}

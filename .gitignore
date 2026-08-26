@@ -30,3 +30,7 @@ npm-debug.*
 # Local dev launch scripts (machine-specific)
 start-backend.bat
 start-frontend.bat
+
+# Claude Code — per-machine tool permissions. `.claude/launch.json` is shared.
+.claude/settings.local.json
+.claude/*.doctor-backup
