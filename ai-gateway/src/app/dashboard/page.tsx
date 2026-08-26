@@ -9,11 +9,17 @@ export default async function Dashboard() {
     return (
       <main style={{ maxWidth: 900, margin: '0 auto', padding: '48px 24px' }}>
         <h1>Observability</h1>
-        <p>
-          Postgres is not configured (<code>DATABASE_URL</code> unset). Request logs are going to
-          stdout. Set <code>DATABASE_URL</code> and run <code>npm run db:init</code> to populate
-          this dashboard.
-        </p>
+        <p>No request stats to show. The gateway itself is unaffected — it is still serving
+        requests and logging them to stdout.</p>
+        <p>This happens when any of the following is true:</p>
+        <ul>
+          <li><code>DATABASE_URL</code> is unset, so logs go to stdout instead of Postgres.</li>
+          <li>Postgres is unreachable — check that it is running (<code>docker compose up -d</code>).</li>
+          <li>
+            The schema has not been applied yet — run <code>npm run db:init</code>.
+          </li>
+        </ul>
+        <p>The gateway logs the specific reason to stderr.</p>
       </main>
     );
   }

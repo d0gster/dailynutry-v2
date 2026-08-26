@@ -83,16 +83,31 @@ export interface RecentStats {
   }>;
 }
 
-/** Reads recent requests for the observability dashboard. */
+/**
+ * Reads recent requests for the observability dashboard.
+ *
+ * Returns null when the stats cannot be read — DB disabled, unreachable, or
+ * schema not yet applied. The dashboard is a read-only view of a degradable
+ * system; letting a Postgres blip throw here turned the whole page into a 500
+ * at exactly the moment you most want to look at it.
+ */
 export async function getRecentStats(limit = 50): Promise<RecentStats | null> {
   const pool = getPool();
   if (!pool) return null;
-  const { rows } = await pool.query(
-    `SELECT created_at, success, provider_used, model, fallback_reason,
-            estimated_usd, latency_ms, repair_count, cache_hit
-       FROM request_log ORDER BY created_at DESC LIMIT $1`,
-    [limit],
-  );
+
+  let rows: RecentStats['rows'];
+  try {
+    ({ rows } = await pool.query(
+      `SELECT created_at, success, provider_used, model, fallback_reason,
+              estimated_usd, latency_ms, repair_count, cache_hit
+         FROM request_log ORDER BY created_at DESC LIMIT $1`,
+      [limit],
+    ));
+  } catch (err) {
+    console.error('[request_log] stats query failed:', (err as Error).message);
+    return null;
+  }
+
   return {
     total: rows.length,
     fallbacks: rows.filter((r) => r.fallback_reason).length,
