@@ -13,6 +13,7 @@ import {
   Pressable,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import Constants from 'expo-constants';
 import { T } from '../../constants/tokens';
 import { Ic } from '../../constants/icons';
 import { Card } from '../../components/ui';
@@ -33,7 +34,7 @@ export default function ProfileScreen() {
 
   const MENU_ITEMS = [
     { id: 'pantry', icon: 'pantry', label: 'Minha despensa', desc: 'Ingredientes disponíveis', route: '/pantry' },
-    { id: 'import', icon: 'cam', label: 'Importar plano', desc: 'Escanear folha do Dietbox', route: '/import' },
+    { id: 'import', icon: 'cam', label: 'Importar plano', desc: 'Novo plano alimentar', route: '/onboarding' },
     { id: 'history', icon: 'book', label: 'Planos anteriores', desc: 'Planos importados', route: '/history' },
     { id: 'calendar', icon: 'calendar', label: 'Histórico', desc: 'Registro diário', route: '/calendar' },
     { id: 'settings', icon: 'settings', label: 'Configurações', desc: 'Unidades, chave API', route: '/settings' },
@@ -123,7 +124,7 @@ export default function ProfileScreen() {
             </View>
             <Text style={styles.logoText}>DAILY NUTRY</Text>
           </View>
-          <Text style={styles.version}>v1.0.0 · NU try, every day</Text>
+          <Text style={styles.version}>v{Constants.expoConfig?.version ?? '?'} · NU try, every day</Text>
         </View>
       </ScrollView>
     </View>

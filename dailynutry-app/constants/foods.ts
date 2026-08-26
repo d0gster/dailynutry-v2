@@ -14,6 +14,12 @@ export interface FoodItem {
   cookedUnit?: string;
   householdMeasure?: string;
   yieldFactor?: number;
+  // ─── TACO enrichment (populated by ai-gateway, never by the user) ──────
+  calories?: number;
+  protein?: number;
+  carbs?: number;
+  fat?: number;
+  tacoId?: number;
 }
 
 export interface FoodGroup {

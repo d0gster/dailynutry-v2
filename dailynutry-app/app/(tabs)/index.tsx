@@ -24,7 +24,7 @@ import { useDietStore } from '../../stores/diet-store';
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { plan, eatenMealIds, toggleMealEaten, markMealEaten, checkDailyReset, autoCompleteMeals, toggleAutoCompleteMeals } = useDietStore();
+  const { plan, eatenMealIds, toggleMealEaten, markMealEaten, checkDailyReset, autoCompleteMeals, toggleAutoCompleteMeals, hasCompletedOnboarding, completeOnboarding } = useDietStore();
   const [showPopup, setShowPopup] = useState(true);
   const [showTooltip, setShowTooltip] = useState(false);
 
@@ -64,7 +64,7 @@ export default function HomeScreen() {
   const meals = (plan?.meals || []).map(m => ({
     ...m,
     eaten: eatenMealIds.includes(m.id),
-    cal: 0, // we will calculate this properly later or parse it from the plan
+    cal: Math.round(m.groups?.reduce((sum, g) => sum + g.items.reduce((s, i) => s + (i.calories ?? 0), 0), 0) || 0),
     alts: m.groups?.reduce((acc, g) => acc + g.items.length, 0) || 0,
     current: m.groups?.map(g => g.items.map(i => `${i.rawQty}${i.unit} ${i.name}`).join(' · ')).join(' + ') || '',
   }));
@@ -215,8 +215,46 @@ export default function HomeScreen() {
         )}
       </ScrollView>
 
-      {/* ─── Empty State Popup ─────────────────────────── */}
-      {!plan && (
+      {/* ─── Welcome Screen (first access / clean state) ── */}
+      {!hasCompletedOnboarding && (
+        <Modal
+          visible={true}
+          transparent={true}
+          animationType="fade"
+        >
+          <View style={styles.welcomeOverlay}>
+            <View style={styles.welcomeContent}>
+              <View style={styles.welcomeLogoRow}>
+                <View style={styles.welcomeLogoCircle}>
+                  <Text style={styles.welcomeLogoLetter}>d</Text>
+                </View>
+              </View>
+              <Text style={styles.welcomeTitle}>Bem vindo ao{'\n'}DailyNuTry</Text>
+              <Text style={styles.welcomeDesc}>
+                Transforme seu plano alimentar impresso em um guia interativo no celular.
+              </Text>
+
+              <View style={styles.welcomeBtns}>
+                <Pressable
+                  style={[styles.welcomeBtn, styles.welcomeBtnGoogle]}
+                  onPress={() => {}}
+                >
+                  <Text style={styles.welcomeBtnGoogleText}>Entrar com Google</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.welcomeBtn, styles.welcomeBtnGuest]}
+                  onPress={() => completeOnboarding()}
+                >
+                  <Text style={styles.welcomeBtnGuestText}>Convidado</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {/* ─── Empty State Popup (onboarded but no plan) ──── */}
+      {hasCompletedOnboarding && !plan && (
         <Modal
           visible={showPopup}
           transparent={true}
@@ -732,5 +770,79 @@ const styles = StyleSheet.create({
   modalBtnText: {
     fontFamily: 'Manrope-Bold',
     fontSize: 15,
+  },
+
+  // Welcome overlay
+  welcomeOverlay: {
+    flex: 1,
+    backgroundColor: T.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+  },
+  welcomeContent: {
+    alignItems: 'center',
+    width: '100%',
+  },
+  welcomeLogoRow: {
+    marginBottom: 24,
+  },
+  welcomeLogoCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 100,
+    backgroundColor: T.forest,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  welcomeLogoLetter: {
+    fontFamily: 'InstrumentSerif-Italic',
+    fontSize: 42,
+    color: T.forestInk,
+  },
+  welcomeTitle: {
+    fontFamily: 'InstrumentSerif',
+    fontSize: 34,
+    color: T.ink,
+    textAlign: 'center',
+    lineHeight: 40,
+    marginBottom: 12,
+  },
+  welcomeDesc: {
+    fontFamily: 'Manrope',
+    fontSize: 15,
+    color: T.inkSoft,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 40,
+    maxWidth: 280,
+  },
+  welcomeBtns: {
+    width: '100%',
+    gap: 12,
+  },
+  welcomeBtn: {
+    height: 52,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  welcomeBtnGoogle: {
+    backgroundColor: T.surface,
+    borderWidth: 1,
+    borderColor: T.hair,
+  },
+  welcomeBtnGoogleText: {
+    fontFamily: 'Manrope-Bold',
+    fontSize: 15,
+    color: T.inkSoft,
+  },
+  welcomeBtnGuest: {
+    backgroundColor: T.forest,
+  },
+  welcomeBtnGuestText: {
+    fontFamily: 'Manrope-Bold',
+    fontSize: 15,
+    color: T.forestInk,
   },
 });

@@ -8,14 +8,14 @@ import { T } from '../../constants/tokens';
 import { Ic } from '../../constants/icons';
 import { Button } from '../../components/ui';
 import { useDietStore } from '../../stores/diet-store';
-import { parseDietboxImages } from '../../constants/dietbox-parser';
+import { useSettingsStore } from '../../stores/settings-store';
 import { parseViaGateway } from '../../constants/gateway-client';
 
 export default function ImportScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { geminiApiKey, gatewayUrl, gatewayApiKey, setPendingPlan } = useDietStore();
-  const useGateway = Boolean(gatewayUrl && gatewayApiKey);
+  const { setPendingPlan } = useDietStore();
+  const { modelOverride } = useSettingsStore();
   const [images, setImages] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [picking, setPicking] = useState(false);
@@ -56,17 +56,6 @@ export default function ImportScreen() {
   };
 
   const handleProcess = async () => {
-    // Prefer the AI gateway; fall back to the legacy direct-Gemini path so the
-    // app keeps working even without a gateway configured.
-    if (!useGateway && !geminiApiKey) {
-      Alert.alert(
-        'Configuração ausente',
-        'Configure o Gateway de IA ou a chave do Gemini nas configurações antes de importar.',
-        [{ text: 'Configurar', onPress: () => router.push('/settings') }, { text: 'Cancelar', style: 'cancel' }]
-      );
-      return;
-    }
-
     if (images.length === 0) {
       Alert.alert('Aviso', 'Adicione pelo menos uma foto da sua dieta.');
       return;
@@ -84,9 +73,7 @@ export default function ImportScreen() {
         })
       );
 
-      const plan = useGateway
-        ? await parseViaGateway(base64Images, gatewayUrl!, gatewayApiKey!, setProgressText)
-        : await parseDietboxImages(base64Images, geminiApiKey!, setProgressText);
+      const plan = await parseViaGateway(base64Images, setProgressText, modelOverride);
       setPendingPlan(plan);
       router.push('/import/confirm');
     } catch (err: any) {

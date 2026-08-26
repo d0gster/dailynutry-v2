@@ -6,24 +6,24 @@ import { DietPlan } from '../constants/foods';
 interface DietState {
   plan: DietPlan | null;
   pendingPlan: Partial<DietPlan> | null;
-  geminiApiKey: string | null;
-  gatewayUrl: string | null;
-  gatewayApiKey: string | null;
   eatenMealIds: string[];
   lastResetDate: string;
   autoCompleteMeals: boolean;
+  hasCompletedOnboarding: boolean;
+  shoppingChecked: string[];
 
   // Actions
   setPlan: (plan: DietPlan) => void;
   setPendingPlan: (plan: Partial<DietPlan> | null) => void;
-  setGeminiApiKey: (key: string) => void;
-  setGatewayConfig: (url: string, apiKey: string) => void;
   toggleMealEaten: (mealId: string) => void;
   markMealEaten: (mealId: string) => void;
   toggleAutoCompleteMeals: () => void;
   resetEatenMeals: () => void;
   clearPlan: () => void;
   checkDailyReset: () => void;
+  completeOnboarding: () => void;
+  clearAllData: () => void;
+  toggleShoppingItem: (name: string) => void;
 }
 
 export const useDietStore = create<DietState>()(
@@ -33,21 +33,14 @@ export const useDietStore = create<DietState>()(
       // import. No personal data ships in the source.
       plan: null,
       pendingPlan: null,
-      geminiApiKey: null,
-      gatewayUrl: null,
-      gatewayApiKey: null,
       eatenMealIds: [],
       lastResetDate: new Date().toISOString().split('T')[0],
       autoCompleteMeals: false,
+      hasCompletedOnboarding: false,
+      shoppingChecked: [],
 
-      setPlan: (plan) => set({ plan, eatenMealIds: [] }), // reset eaten when new plan
+      setPlan: (plan) => set({ plan, eatenMealIds: [] }),
       setPendingPlan: (plan) => set({ pendingPlan: plan }),
-      
-      setGeminiApiKey: (key) => set({ geminiApiKey: key }),
-      setGatewayConfig: (url, apiKey) => set({
-        gatewayUrl: url.trim() || null,
-        gatewayApiKey: apiKey.trim() || null,
-      }),
 
       toggleMealEaten: (mealId) => set((state) => {
         const isEaten = state.eatenMealIds.includes(mealId);
@@ -68,7 +61,26 @@ export const useDietStore = create<DietState>()(
       })),
 
       resetEatenMeals: () => set({ eatenMealIds: [] }),
-      clearPlan: () => set({ plan: null, eatenMealIds: [] }),
+      clearPlan: () => set({ plan: null, eatenMealIds: [], shoppingChecked: [] }),
+      completeOnboarding: () => set({ hasCompletedOnboarding: true }),
+      clearAllData: () => set({
+        plan: null,
+        pendingPlan: null,
+        eatenMealIds: [],
+        lastResetDate: new Date().toISOString().split('T')[0],
+        autoCompleteMeals: false,
+        hasCompletedOnboarding: false,
+        shoppingChecked: [],
+      }),
+
+      toggleShoppingItem: (name) => set((state) => {
+        const isChecked = state.shoppingChecked.includes(name);
+        return {
+          shoppingChecked: isChecked
+            ? state.shoppingChecked.filter(n => n !== name)
+            : [...state.shoppingChecked, name]
+        };
+      }),
 
       checkDailyReset: () => set((state) => {
         const today = new Date().toISOString().split('T')[0];

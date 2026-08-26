@@ -1,8 +1,10 @@
 /**
  * DailyNutry — Market Screen (Mercado)
- * 
- * Quick access to shopping list configuration.
- * Shows summary of last shopping list and CTA to create new one.
+ *
+ * Shopping list generated from the active diet plan.
+ * Groups items by category, sums duplicates across meals,
+ * and shows both cooked (prescribed) and raw (purchase) quantities
+ * using yield factors from the gateway enrichment.
  */
 
 import React from 'react';
@@ -15,139 +17,206 @@ import {
 } from 'react-native';
 import { T } from '../../constants/tokens';
 import { Ic } from '../../constants/icons';
+import { useDietStore } from '../../stores/diet-store';
+import type { DietPlan } from '../../constants/foods';
 
-const SHOPPING = [
-  {
-    cat: 'Carboidratos',
-    items: [
-      { name: 'Arroz branco', raw: '1,15 kg', detail: '90g cozido × 5d × 2p (+35%) · rend. 2.5×', checked: true },
-      { name: 'Batata doce', raw: '450 g', detail: '90g cozida × 2d × 2p · perde 12%', checked: false },
-      { name: 'Pão integral', raw: '14 fatias', detail: '2 fatias × 7 jantares', checked: false },
-    ],
-  },
-  {
-    cat: 'Proteínas',
-    items: [
-      { name: 'Filé de frango', raw: '2,2 kg', detail: '150g × 5 + 140g × 7 · perde ~25%', checked: false },
-      { name: 'Filé de peixe', raw: '650 g', detail: '190g cozido × 2 · perde ~20%', checked: false },
-      { name: 'Ovos', raw: '36 un.', detail: '2 ovos × 7 cafés + cozinha', checked: false },
-    ],
-  },
-  {
-    cat: 'Leguminosas',
-    items: [
-      { name: 'Feijão carioca seco', raw: '350 g', detail: '70g cozido × 5 · rend. 2,2×', checked: false },
-      { name: 'Grão de bico seco', raw: '150 g', detail: '50g cozido × 2 · rend. 2,5×', checked: false },
-    ],
-  },
-  {
-    cat: 'Laticínios & extras',
-    items: [
-      { name: 'Iogurte zero', raw: '1,9 kg', detail: '200g × 7 lanches × +35%', checked: false },
-      { name: 'Banana', raw: '1,4 kg', detail: '100g × 7 + perda casca ~35%', checked: false },
-      { name: 'Whey protein', raw: '420 g', detail: '30g × 7 + sub ocasional', checked: false },
-    ],
-  },
-];
+// ─── Category display config ─────────────────────────────────────────────────
+
+const CATEGORY_META: Record<string, { label: string; icon: string; color: string }> = {
+  protein: { label: 'Proteínas',    icon: 'flame',   color: '#a64b3a' },
+  carb:    { label: 'Carboidratos', icon: 'droplet',  color: '#c98a5b' },
+  legume:  { label: 'Legumes',      icon: 'leaf',     color: '#4a7340' },
+  dairy:   { label: 'Laticínios',  icon: 'droplet',  color: '#5b7a9a' },
+  fruit:   { label: 'Frutas',       icon: 'apple',    color: '#8a5bc9' },
+  salad:   { label: 'Saladas',      icon: 'leaf',     color: '#6a9a5b' },
+  other:   { label: 'Outros',       icon: 'plate',    color: T.inkSoft },
+};
+
+interface AggregatedItem {
+  name: string;
+  rawQty: number;
+  unit: string;
+  yieldFactor?: number;
+  calories: number;
+}
+
+function aggregateItems(plan: DietPlan) {
+  const byCategory: Record<string, Record<string, AggregatedItem>> = {};
+
+  for (const meal of plan.meals) {
+    for (const group of meal.groups) {
+      const cat = group.category || 'other';
+      if (!byCategory[cat]) byCategory[cat] = {};
+
+      for (const item of group.items) {
+        const key = item.name.toLowerCase().trim();
+        if (!byCategory[cat][key]) {
+          byCategory[cat][key] = {
+            name: item.name,
+            rawQty: 0,
+            unit: item.unit,
+            yieldFactor: item.yieldFactor,
+            calories: 0,
+          };
+        }
+        byCategory[cat][key].rawQty += item.rawQty;
+        byCategory[cat][key].calories += (item.calories ?? 0);
+        // Keep the yield factor from the first occurrence
+        if (item.yieldFactor && !byCategory[cat][key].yieldFactor) {
+          byCategory[cat][key].yieldFactor = item.yieldFactor;
+        }
+      }
+    }
+  }
+
+  return byCategory;
+}
+
+function formatQty(qty: number, unit: string): string {
+  if (qty === 0) return 'à vontade';
+  const rounded = Math.round(qty * 10) / 10;
+  return `${rounded}${unit ? ` ${unit}` : ''}`;
+}
+
+const CATEGORY_ORDER = ['protein', 'carb', 'legume', 'dairy', 'fruit', 'salad', 'other'];
 
 export default function MarketScreen() {
+  const { plan, shoppingChecked, toggleShoppingItem } = useDietStore();
+
+  if (!plan) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.headerWrap}>
+          <Text style={styles.headerTitle}>Mercado</Text>
+        </View>
+        <View style={styles.emptyState}>
+          <View style={styles.emptyIcon}>
+            <Ic name="cart" size={32} color={T.inkMute} />
+          </View>
+          <Text style={styles.emptyTitle}>Nenhum plano ativo</Text>
+          <Text style={styles.emptyDesc}>
+            Importe um plano alimentar para gerar a lista de compras.
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  const grouped = aggregateItems(plan);
+  const totalItems = Object.values(grouped).reduce((s, cat) => s + Object.keys(cat).length, 0);
+  const checkedCount = shoppingChecked.length;
+
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.headerRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerLabel}>11 · 17 mai · 2 pessoas</Text>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        {/* Header */}
+        <View style={styles.headerWrap}>
+          <View>
             <Text style={styles.headerTitle}>
               Mercado da <Text style={styles.headerTitleAccent}>semana</Text>
             </Text>
-          </View>
-          <Pressable style={styles.settingsBtn}>
-            <Ic name="settings" size={16} color={T.inkSoft} />
-          </Pressable>
-        </View>
-
-        {/* Summary cards */}
-        <View style={styles.summaryRow}>
-          <View style={styles.summaryForest}>
-            <Text style={styles.summaryLabel}>Estimado</Text>
-            <Text style={styles.summaryValue}>R$ 342</Text>
-            <Text style={styles.summaryDetail}>12 itens · ~24 kg</Text>
-          </View>
-          <View style={styles.summaryCream}>
-            <Text style={styles.summaryCreamLabel}>Rendimento</Text>
-            <Text style={styles.summaryCreamTitle}>
-              Compra <Text style={{ fontFamily: 'InstrumentSerif-Italic' }}>cru</Text> → você come{' '}
-              <Text style={{ fontFamily: 'InstrumentSerif-Italic' }}>pronto</Text>.
+            <Text style={styles.headerSub}>
+              {checkedCount}/{totalItems} itens comprados
             </Text>
-            <Text style={styles.summaryCreamDetail}>Cálculo automático ✓</Text>
           </View>
         </View>
-      </View>
 
-      {/* Shopping list */}
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        showsVerticalScrollIndicator={false}
-      >
-        {SHOPPING.map((group) => (
-          <View key={group.cat} style={styles.group}>
-            <Text style={styles.groupTitle}>{group.cat}</Text>
-            <View style={styles.groupCard}>
-              {group.items.map((item, i) => (
-                <View key={item.name} style={[styles.itemRow, i > 0 && styles.itemBorder]}>
-                  <View style={[styles.checkbox, item.checked && styles.checkboxDone]}>
-                    {item.checked && (
-                      <Ic name="check" size={13} color={T.forestInk} strokeWidth={2.5} />
-                    )}
-                  </View>
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <View style={styles.itemNameRow}>
-                      <Text style={[styles.itemName, item.checked && styles.itemNameDone]}>
-                        {item.name}
-                      </Text>
-                      <Text style={[styles.itemRaw, item.checked && styles.itemRawDone]}>
-                        {item.raw}
-                      </Text>
-                    </View>
-                    <Text style={styles.itemDetail}>{item.detail}</Text>
-                  </View>
+        {/* Yield info card */}
+        <View style={styles.yieldCard}>
+          <Text style={styles.yieldCardLabel}>Rendimento</Text>
+          <Text style={styles.yieldCardTitle}>
+            Compra <Text style={{ fontFamily: 'InstrumentSerif-Italic' }}>cru</Text> → você come{' '}
+            <Text style={{ fontFamily: 'InstrumentSerif-Italic' }}>pronto</Text>.
+          </Text>
+          <Text style={styles.yieldCardDetail}>Cálculo automático ✓</Text>
+        </View>
+
+        {/* Category sections */}
+        {CATEGORY_ORDER.map((cat) => {
+          const items = grouped[cat];
+          if (!items || Object.keys(items).length === 0) return null;
+          const meta = CATEGORY_META[cat] || CATEGORY_META.other;
+
+          return (
+            <View key={cat} style={styles.group}>
+              <View style={styles.groupHeader}>
+                <View style={[styles.groupDot, { backgroundColor: meta.color }]}>
+                  <Ic name={meta.icon} size={14} color="#fff" />
                 </View>
-              ))}
+                <Text style={styles.groupTitle}>{meta.label}</Text>
+                <Text style={styles.groupCount}>{Object.keys(items).length}</Text>
+              </View>
+
+              <View style={styles.groupCard}>
+                {Object.values(items).map((item, i) => {
+                  const key = item.name.toLowerCase().trim();
+                  const isChecked = shoppingChecked.includes(key);
+                  const rawPurchaseQty = item.yieldFactor
+                    ? item.rawQty / item.yieldFactor
+                    : null;
+
+                  return (
+                    <Pressable
+                      key={key}
+                      style={[styles.itemRow, i > 0 && styles.itemBorder]}
+                      onPress={() => toggleShoppingItem(key)}
+                    >
+                      {/* Checkbox */}
+                      <View style={[styles.checkbox, isChecked && styles.checkboxDone]}>
+                        {isChecked && <Ic name="check" size={13} color={T.forestInk} strokeWidth={2.5} />}
+                      </View>
+
+                      {/* Item info */}
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <View style={styles.itemNameRow}>
+                          <Text style={[styles.itemName, isChecked && styles.itemNameDone]}>
+                            {item.name}
+                          </Text>
+                          <Text style={[styles.itemRaw, isChecked && styles.itemRawDone]}>
+                            {formatQty(item.rawQty, item.unit)}
+                          </Text>
+                        </View>
+                        <Text style={styles.itemDetail}>
+                          Pronto: {formatQty(item.rawQty, item.unit)}
+                          {rawPurchaseQty != null && (
+                            ` → Cru: ${formatQty(rawPurchaseQty, item.unit)}`
+                          )}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
             </View>
-          </View>
-        ))}
+          );
+        })}
       </ScrollView>
     </View>
   );
 }
+
+// ─── Styles ──────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: T.bg,
   },
-  header: {
-    paddingTop: 50,
-    paddingHorizontal: 18,
+  scroll: {
+    padding: 18,
+    paddingBottom: 100,
+  },
+
+  // Header
+  headerWrap: {
+    paddingTop: 36,
     paddingBottom: 10,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  headerLabel: {
-    fontFamily: 'Manrope-Bold',
-    fontSize: 11,
-    letterSpacing: 1,
-    color: T.inkMute,
-    textTransform: 'uppercase',
+    paddingHorizontal: 4,
   },
   headerTitle: {
     fontFamily: 'InstrumentSerif',
-    fontSize: 24,
-    lineHeight: 28,
+    fontSize: 28,
+    lineHeight: 32,
     color: T.ink,
     letterSpacing: -0.3,
   },
@@ -155,56 +224,21 @@ const styles = StyleSheet.create({
     fontFamily: 'InstrumentSerif-Italic',
     color: T.forest,
   },
-  settingsBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 100,
-    borderWidth: 1,
-    borderColor: T.hairSoft,
-    backgroundColor: T.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
+  headerSub: {
+    fontFamily: 'Manrope-SemiBold',
+    fontSize: 13,
+    color: T.inkMute,
+    marginTop: 4,
   },
-  summaryRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 14,
-  },
-  summaryForest: {
-    flex: 1,
-    backgroundColor: T.forest,
-    borderRadius: 14,
-    padding: 14,
-  },
-  summaryLabel: {
-    fontFamily: 'Manrope-Bold',
-    fontSize: 10,
-    letterSpacing: 0.6,
-    color: T.forestInk,
-    opacity: 0.7,
-    textTransform: 'uppercase',
-  },
-  summaryValue: {
-    fontFamily: 'InstrumentSerif',
-    fontSize: 26,
-    color: T.forestInk,
-    marginTop: 2,
-    fontVariant: ['tabular-nums'],
-  },
-  summaryDetail: {
-    fontFamily: 'Manrope',
-    fontSize: 11,
-    color: T.forestInk,
-    opacity: 0.7,
-    marginTop: 2,
-  },
-  summaryCream: {
-    flex: 1,
+
+  // Yield info card
+  yieldCard: {
     backgroundColor: T.cream,
     borderRadius: 14,
     padding: 14,
+    marginBottom: 18,
   },
-  summaryCreamLabel: {
+  yieldCardLabel: {
     fontFamily: 'Manrope-Bold',
     fontSize: 10,
     letterSpacing: 0.6,
@@ -212,35 +246,85 @@ const styles = StyleSheet.create({
     opacity: 0.7,
     textTransform: 'uppercase',
   },
-  summaryCreamTitle: {
+  yieldCardTitle: {
     fontFamily: 'InstrumentSerif',
     fontSize: 18,
     lineHeight: 21,
     color: '#6e521c',
     marginTop: 4,
   },
-  summaryCreamDetail: {
+  yieldCardDetail: {
     fontFamily: 'Manrope',
     fontSize: 10,
     color: '#6e521c',
     opacity: 0.7,
     marginTop: 4,
   },
-  scroll: {
-    padding: 18,
-    paddingBottom: 100,
+
+  // Empty state
+  emptyState: {
+    marginHorizontal: 22,
+    marginTop: 40,
+    padding: 30,
+    alignItems: 'center',
+    backgroundColor: T.surface,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: T.hair,
   },
+  emptyIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: T.surfaceAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  emptyTitle: {
+    fontFamily: 'InstrumentSerif',
+    fontSize: 22,
+    color: T.ink,
+    marginBottom: 8,
+  },
+  emptyDesc: {
+    fontFamily: 'Manrope',
+    fontSize: 14,
+    color: T.inkSoft,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+
+  // Groups
   group: {
     marginBottom: 14,
   },
+  groupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 6,
+    paddingHorizontal: 4,
+  },
+  groupDot: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   groupTitle: {
+    flex: 1,
     fontFamily: 'Manrope-Bold',
-    fontSize: 11,
-    letterSpacing: 1.2,
+    fontSize: 13,
+    letterSpacing: 0.8,
     color: T.inkMute,
     textTransform: 'uppercase',
-    paddingVertical: 6,
-    paddingHorizontal: 4,
+  },
+  groupCount: {
+    fontFamily: 'JetBrainsMono',
+    fontSize: 12,
+    color: T.inkMute,
   },
   groupCard: {
     backgroundColor: T.surface,
