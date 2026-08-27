@@ -116,24 +116,39 @@ CREATE TABLE IF NOT EXISTS yield_override (
 );
 
 -- ─── Audit trail ────────────────────────────────────────────────────────────
--- One row per notable thing that happened to a device: refusals, blocks,
--- validation failures, quota exhaustion.
+-- One row per action: registrations, revocations, authentication outcomes,
+-- mutations, refusals, blocks, rate limiting, quota exhaustion, and successful
+-- extractions.
 --
 -- Separate from `request_log`, which answers "what did this cost and how fast
--- was it". This answers "what happened to this user, and why" — the question a
--- support conversation starts from. It is written to be read later by a person
--- or an agent handling a complaint, so `context` carries the specifics
--- (which rejection reason, which limit) rather than a prose message that would
--- have to be parsed back out.
+-- was it". This answers "what did this caller DO, and how did the gateway
+-- answer" — where a support conversation starts. It is written to be read
+-- later by a person or an agent handling a complaint, so `context` carries
+-- machine-readable specifics rather than prose that would have to be parsed
+-- back out.
+--
+-- COVERAGE is total; CONTENT is not, and the two are separate decisions:
+--
+--   Recorded: who, when, from where, endpoint, status, duration, counts,
+--   dimensions, refusal reasons, before/after for every mutation, and the
+--   SHA-256 of submitted images.
+--
+--   Not recorded, for two narrow and legal reasons:
+--     * image bytes — persisting content a safety filter refused would turn a
+--       refusal into hosting the very material it declined;
+--     * extracted plan text (patient names, prescribed foods) — health data,
+--       "dado pessoal sensível" under LGPD Art. 5 II. Audit tables are the ones
+--       nobody deletes, so copying plan content here would quietly make this a
+--       medical record with its own retention and erasure obligations.
+--
+-- The image HASH is what replaces the bytes, and it answers the questions an
+-- investigation actually asks: has this exact image been submitted before, by
+-- how many devices, how often. Already computed for the cache key.
 --
 -- `device_id` is nullable and ON DELETE SET NULL on purpose: an event about a
 -- caller with no device (transition mode, or a failed registration) is still
 -- worth keeping, and deleting a device must not erase the history of why it
 -- was blocked.
---
--- NOTHING user-supplied is stored here — no image bytes, no extracted plan
--- text. An audit trail that accumulates the very content it was recording
--- refusals of would become the liability it exists to avoid.
 
 CREATE TABLE IF NOT EXISTS audit_event (
   id         BIGSERIAL   PRIMARY KEY,
@@ -143,8 +158,7 @@ CREATE TABLE IF NOT EXISTS audit_event (
   -- Coarse origin, for spotting one source driving many devices.
   caller_ip  TEXT,
 
-  -- Machine-readable: 'content_rejected', 'image_invalid', 'device_blocked',
-  -- 'quota_exceeded', 'rate_limited', 'extraction_failed'.
+  -- Machine-readable; see AuditEventName in src/db/audit.ts for the catalogue.
   event      TEXT        NOT NULL,
   severity   TEXT        NOT NULL DEFAULT 'info'
              CHECK (severity IN ('info', 'warning', 'critical')),
@@ -159,6 +173,10 @@ CREATE TABLE IF NOT EXISTS audit_event (
 CREATE INDEX IF NOT EXISTS idx_audit_event_device  ON audit_event (device_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_event_created ON audit_event (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_event_event   ON audit_event (event, created_at DESC);
+-- Correlating one image across devices is the core investigative query, and
+-- without this it is a sequential scan of the whole trail.
+CREATE INDEX IF NOT EXISTS idx_audit_event_hash    ON audit_event ((context->>'imagesHash'));
+CREATE INDEX IF NOT EXISTS idx_audit_event_ref     ON audit_event (reference);
 
 -- ─── Device blocks ──────────────────────────────────────────────────────────
 -- A temporary bar, distinct from the permanent `device.revoked`.

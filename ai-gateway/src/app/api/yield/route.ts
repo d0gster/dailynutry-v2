@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { searchYield, setYieldOverride } from '@/db/yield';
 import { z } from 'zod';
 import { identifyCaller } from '@/core/device-auth';
+import { recordAuditEvent } from '@/db/audit';
+import { beginRequest, baseContext, withRequestId } from '@/core/request-context';
 import { checkRateLimit, rateLimitHeaders } from '@/cache/redis';
 
 export const runtime = 'nodejs';
@@ -56,6 +58,8 @@ const UpdateBody = z.object({
  * other user's numbers.
  */
 export async function PUT(req: NextRequest) {
+  const ctx = beginRequest(req);
+
   // Also identifyCaller: recording a preference is not an extraction.
   const auth = await identifyCaller(req);
   if (!auth.ok) return auth.response;
@@ -73,9 +77,17 @@ export async function PUT(req: NextRequest) {
 
   const limit = await checkRateLimit(`yield-write:${auth.caller.identity}`, WRITE_LIMIT, RATE_WINDOW);
   if (!limit.allowed) {
+    await recordAuditEvent({
+      event: 'rate_limited',
+      severity: 'warning',
+      deviceId,
+      callerIp: auth.caller.identity,
+      reference: ctx.requestId,
+      context: baseContext(ctx, { bucket: 'yield-write', limit: WRITE_LIMIT }),
+    });
     return NextResponse.json(
       { error: 'Rate limit exceeded', retryAfterSeconds: limit.retryAfterSeconds },
-      { status: 429, headers: rateLimitHeaders(limit) },
+      { status: 429, headers: withRequestId(ctx, rateLimitHeaders(limit)) },
     );
   }
 
@@ -93,8 +105,24 @@ export async function PUT(req: NextRequest) {
   if (!result) {
     return NextResponse.json(
       { error: 'Yield factor not found' },
-      { status: 404, headers: rateLimitHeaders(limit) },
+      { status: 404, headers: withRequestId(ctx, rateLimitHeaders(limit)) },
     );
   }
-  return NextResponse.json({ result }, { headers: rateLimitHeaders(limit) });
+
+  // A mutation, so the audit records what changed — not just that something
+  // did. Numbers and the factor's id only; nothing here is user content.
+  await recordAuditEvent({
+    event: 'yield_override_set',
+    deviceId,
+    callerIp: auth.caller.identity,
+    reference: ctx.requestId,
+    context: baseContext(ctx, {
+      yieldFactorId: body.id,
+      before: result.previousFactor,
+      after: result.factor,
+      replacedExisting: result.replacedExisting,
+    }),
+  });
+
+  return NextResponse.json({ result }, { headers: withRequestId(ctx, rateLimitHeaders(limit)) });
 }

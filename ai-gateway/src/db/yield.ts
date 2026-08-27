@@ -113,25 +113,45 @@ export async function searchYieldBatch(
   return matches;
 }
 
+export interface YieldOverrideResult extends YieldFactor {
+  /**
+   * What this device saw before the write: its own earlier correction, or the
+   * shared default when it had none.
+   *
+   * Returned so the mutation can be audited with a before/after rather than
+   * just an after — "the factor is now 0.5" does not tell you whether anything
+   * changed, and a change is what an audit trail is for.
+   */
+  previousFactor: number;
+  /** True when this replaced an earlier correction rather than adding one. */
+  replacedExisting: boolean;
+}
+
 /**
  * Record one device's correction to a yield factor, replacing any previous
  * correction it made for the same factor. Shared defaults are never mutated,
  * so one user's number cannot leak into everyone else's plans.
  *
- * Returns the factor as that device now sees it, or null if the id does not
- * exist or the write failed.
+ * Returns the factor as that device now sees it plus what it saw before, or
+ * null if the id does not exist or the write failed.
  */
 export async function setYieldOverride(
   deviceId: string,
   yieldFactorId: number,
   factor: number,
-): Promise<YieldFactor | null> {
+): Promise<YieldOverrideResult | null> {
   const pool = getPool();
   if (!pool) return null;
 
   try {
-    const { rows } = await pool.query<YieldFactor>(
-      `WITH upserted AS (
+    const { rows } = await pool.query<YieldOverrideResult>(
+      // `before` is evaluated against the same snapshot as the INSERT, so it
+      // still sees the pre-write state even though the upsert follows it.
+      `WITH before AS (
+         SELECT factor FROM yield_override
+          WHERE device_id = $1::uuid AND yield_factor_id = $2
+       ),
+       upserted AS (
          INSERT INTO yield_override (device_id, yield_factor_id, factor)
          SELECT $1::uuid, y.id, $3
            FROM yield_factor y
@@ -141,7 +161,9 @@ export async function setYieldOverride(
          RETURNING yield_factor_id, factor
        )
        SELECT y.id, y.name, y.category, u.factor, y.method,
-              'usuario' AS source, y.notes
+              'usuario' AS source, y.notes,
+              COALESCE((SELECT factor FROM before), y.factor) AS "previousFactor",
+              EXISTS (SELECT 1 FROM before)                   AS "replacedExisting"
          FROM upserted u
          JOIN yield_factor y ON y.id = u.yield_factor_id`,
       [deviceId, yieldFactorId, factor],

@@ -1,7 +1,14 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { createHash, randomUUID } from 'node:crypto';
 import { registerDevice, resolveDeviceAndConsumeQuota, lookupDevice } from '@/db/device';
 import { checkDeviceBlock, blockDevice, unblockDevice } from '@/db/device-block';
-import { recordAuditEvent, countRecentEvents, deviceTimeline } from '@/db/audit';
+import {
+  recordAuditEvent,
+  countRecentEvents,
+  deviceTimeline,
+  sightingsOfHash,
+  eventsForReference,
+} from '@/db/audit';
 import {
   recordContentRefusal,
   REFUSALS_BEFORE_BLOCK,
@@ -156,23 +163,86 @@ describe.skipIf(!hasDb)('content refusal policy', () => {
   });
 
   it('records WHY without recording WHAT', async () => {
+    // A base64 payload stands in for a real image, to prove none of it lands
+    // in the trail no matter how the refusal is recorded.
+    const payload = Buffer.from('pretend-image-bytes').toString('base64');
+    const hash = `extract:${createHash('sha256').update(payload).digest('hex')}`;
+
     await recordContentRefusal({
       deviceId,
       callerIp: TEST_TAG,
       provider: 'gemini',
       reason: 'IMAGE_SAFETY',
+      imagesHash: hash,
     });
 
     const [event] = await deviceTimeline(deviceId);
 
     expect(event.event).toBe('content_rejected');
-    expect(event.context).toEqual({ provider: 'gemini', reason: 'IMAGE_SAFETY' });
+    expect(event.context.provider).toBe('gemini');
+    expect(event.context.reason).toBe('IMAGE_SAFETY');
+    expect(event.context.imagesHash).toBe(hash);
 
-    // The audit trail must never accumulate the material it is recording
-    // refusals of. Nothing here should resemble image or plan content.
+    // The point of the hash: it identifies the submission without being
+    // reversible into it.
     const serialised = JSON.stringify(event.context);
+    expect(serialised).not.toContain(payload);
     expect(serialised).not.toMatch(/base64|image\/|data:/i);
-    expect(serialised.length).toBeLessThan(200);
+  });
+
+  it('correlates one image across devices, which is what the hash is for', async () => {
+    // One device sending many different images is a person with a bad camera.
+    // One image arriving from many devices is a campaign. Only the hash tells
+    // them apart — and it does so without the bytes ever being stored.
+    const other = await registerDevice(TEST_TAG);
+    if (!other) throw new Error('registration failed');
+    const shared = `extract:${createHash('sha256').update('same-image').digest('hex')}`;
+
+    for (const id of [deviceId, other.deviceId]) {
+      await recordContentRefusal({
+        deviceId: id,
+        callerIp: TEST_TAG,
+        provider: 'gemini',
+        reason: 'IMAGE_SAFETY',
+        imagesHash: shared,
+      });
+    }
+
+    const sightings = await sightingsOfHash(shared);
+    const devices = new Set(sightings.map((s) => s.device_id));
+
+    expect(devices.size).toBe(2);
+  });
+
+  it('ties every event of one request together by its reference', async () => {
+    const reference = randomUUID();
+
+    await recordAuditEvent({ event: 'rate_limited', deviceId, callerIp: TEST_TAG, reference });
+    await recordAuditEvent({ event: 'image_invalid', deviceId, callerIp: TEST_TAG, reference });
+    await recordAuditEvent({ event: 'extraction_failed', deviceId, callerIp: TEST_TAG });
+
+    const trace = await eventsForReference(reference);
+
+    // "It failed, code abc-123" must resolve to that request and nothing else.
+    expect(trace).toHaveLength(2);
+    expect(trace.map((e) => e.event)).toEqual(['rate_limited', 'image_invalid']);
+  });
+
+  it('records a mutation with its before and after', async () => {
+    // An audit that only says "a value was set" cannot answer whether anything
+    // changed, which is the question an audit exists for.
+    await recordAuditEvent({
+      event: 'yield_override_set',
+      deviceId,
+      callerIp: TEST_TAG,
+      context: { yieldFactorId: 1, before: 0.65, after: 0.5, replacedExisting: false },
+    });
+
+    const [event] = await deviceTimeline(deviceId);
+
+    expect(event.event).toBe('yield_override_set');
+    expect(event.context.before).toBe(0.65);
+    expect(event.context.after).toBe(0.5);
   });
 
   it('gives support a timeline, newest first', async () => {

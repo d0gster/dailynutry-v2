@@ -27,6 +27,8 @@ import {
 import { persistRequestLog } from '@/db/request-log';
 import { recordAuditEvent } from '@/db/audit';
 import { refundQuota } from '@/db/device';
+import { callerIdentity } from '@/core/auth';
+import { beginRequest, baseContext, withRequestId } from '@/core/request-context';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -62,10 +64,23 @@ const RATE_WINDOW = 60; // seconds
 
 export async function POST(req: NextRequest) {
   const started = Date.now();
+  const ctx = beginRequest(req);
 
   // ── Auth: app key + device identity (and its daily quota). ───────────────
   const auth = await resolveCaller(req);
-  if (!auth.ok) return auth.response;
+  if (!auth.ok) {
+    // The refusal already carries its own status; what the audit adds is that
+    // it HAPPENED, and to whom. A burst of these from one source is the shape
+    // credential probing takes.
+    await recordAuditEvent({
+      event: auth.response.status === 429 ? 'quota_exceeded' : 'auth_failed',
+      severity: 'warning',
+      callerIp: callerIdentity(req),
+      reference: ctx.requestId,
+      context: baseContext(ctx, { status: auth.response.status }),
+    });
+    return auth.response;
+  }
 
   // ── Reject over-sized bodies before buffering them into memory. ──────────
   const tooLarge = enforceContentLength(req);
@@ -75,8 +90,16 @@ export async function POST(req: NextRequest) {
   //    gateway key, so one heavy caller cannot spend everyone else's budget.
   //    Falls back to an IP bucket until device auth is enforced. ────────────
   const limit = await checkRateLimit(auth.caller.identity, RATE_LIMIT, RATE_WINDOW);
-  const limitHeaders = rateLimitHeaders(limit);
+  const limitHeaders = withRequestId(ctx, rateLimitHeaders(limit));
   if (!limit.allowed) {
+    await recordAuditEvent({
+      event: 'rate_limited',
+      severity: 'warning',
+      deviceId: auth.caller.deviceId,
+      callerIp: auth.caller.identity,
+      reference: ctx.requestId,
+      context: baseContext(ctx, { bucket: 'extract', limit: RATE_LIMIT, windowSeconds: RATE_WINDOW }),
+    });
     return NextResponse.json(
       { error: 'Rate limit exceeded', retryAfterSeconds: limit.retryAfterSeconds },
       { status: 429, headers: limitHeaders },
@@ -91,6 +114,18 @@ export async function POST(req: NextRequest) {
     // Validation failures describe the caller's OWN request, so the field-level
     // detail is safe and genuinely useful. Anything else here (malformed JSON,
     // a body that never arrived) is reported without its internal message.
+    await recordAuditEvent({
+      event: 'request_invalid',
+      severity: 'warning',
+      deviceId: auth.caller.deviceId,
+      callerIp: auth.caller.identity,
+      reference: ctx.requestId,
+      context: baseContext(ctx, {
+        // Field paths, never field values: a rejected body can contain anything.
+        issues: err instanceof z.ZodError ? err.issues.map((i) => i.path.join('.')) : ['malformed_json'],
+      }),
+    });
+
     if (err instanceof z.ZodError) {
       return NextResponse.json(
         {
@@ -129,7 +164,14 @@ export async function POST(req: NextRequest) {
       severity: 'warning',
       deviceId: auth.caller.deviceId,
       callerIp: auth.caller.identity,
-      context: { reasons: rejected.map((r) => r.reason), imageCount: body.images.length },
+      reference: ctx.requestId,
+      context: baseContext(ctx, {
+        reasons: rejected.map((r) => r.reason),
+        imageCount: body.images.length,
+        declaredTypes: body.images.map((i) => i.mimeType),
+        // Size is a useful abuse signal and reveals nothing about content.
+        base64Lengths: body.images.map((i) => i.base64.length),
+      }),
     });
 
     return NextResponse.json(
@@ -231,6 +273,34 @@ export async function POST(req: NextRequest) {
       repairs: guarded.repairs,
     });
 
+    await recordAuditEvent({
+      event: 'extraction_succeeded',
+      deviceId: auth.caller.deviceId,
+      callerIp: auth.caller.identity,
+      reference: ctx.requestId,
+      context: baseContext(ctx, {
+        // The hash — not the image. It answers "has this exact image been sent
+        // before, by whom, how often" without the gateway holding one byte of
+        // it. Already computed for the cache key, so it costs nothing.
+        imagesHash: baseCacheKey,
+        imageCount: images.length,
+        dimensions: checked.map((c) => (c.ok ? `${c.image.width}x${c.image.height}` : null)),
+        exifStripped: checked.some((c) => c.ok && c.image.exifStripped),
+        provider: extraction.providerUsed.name,
+        model: extraction.completion.model,
+        fallbackReason: extraction.fallbackReason ?? null,
+        repairs: guarded.repairs.length,
+        estimatedUsd: cost.estimatedUsd,
+        // Counts describe the SHAPE of the plan. The plan itself — patient
+        // name, prescribed foods — is health data and stays out of the log.
+        mealCount: enriched.meals.length,
+        itemCount: enriched.meals.reduce(
+          (sum, meal) => sum + meal.groups.reduce((n, g) => n + g.items.length, 0),
+          0,
+        ),
+      }),
+    });
+
     return NextResponse.json(
       {
         plan: enriched,
@@ -258,6 +328,12 @@ export async function POST(req: NextRequest) {
         callerIp: auth.caller.identity,
         provider: err.provider,
         reason: err.reason,
+        reference: ctx.requestId,
+        // The hash lets an investigation ask "was this same image sent by
+        // other devices too?" — the question that separates one bad photo from
+        // a campaign — while the bytes themselves are never persisted. Storing
+        // those would mean holding exactly what the filter refused.
+        imagesHash: baseCacheKey,
       });
 
       await persistRequestLog({
@@ -291,6 +367,23 @@ export async function POST(req: NextRequest) {
 
     const isGuardrail = err instanceof GuardrailError;
     const status = err instanceof ProviderError && !err.retryable ? 502 : 500;
+
+    await recordAuditEvent({
+      event: 'extraction_failed',
+      severity: 'critical',
+      deviceId: auth.caller.deviceId,
+      callerIp: auth.caller.identity,
+      reference: ctx.requestId,
+      context: baseContext(ctx, {
+        imagesHash: baseCacheKey,
+        imageCount: images.length,
+        status,
+        guardrail: isGuardrail,
+        // The failure class, not the message: provider messages carry hosts,
+        // ports and occasionally fragments of a credential.
+        errorType: (err as Error).name,
+      }),
+    });
     await persistRequestLog({
       success: false,
       providerUsed: null,

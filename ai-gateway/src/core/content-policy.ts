@@ -44,16 +44,24 @@ export async function recordContentRefusal(params: {
   callerIp: string | null;
   provider: string;
   reason: string;
+  reference?: string;
+  /** SHA-256 of the submitted images — see the note below. */
+  imagesHash?: string;
 }): Promise<RefusalOutcome> {
-  const { deviceId, callerIp, provider, reason } = params;
+  const { deviceId, callerIp, provider, reason, reference, imagesHash } = params;
 
   await recordAuditEvent({
     event: 'content_rejected',
     severity: 'warning',
     deviceId,
     callerIp,
-    // No image data, no extracted text — only the provider's verdict.
-    context: { provider, reason },
+    reference,
+    // The provider's verdict and a HASH of what was sent. The hash is what
+    // makes an investigation possible — the same image arriving from several
+    // devices is a campaign, the same device sending different images is
+    // something else — while the bytes are never persisted. Keeping those
+    // would mean storing precisely the material the filter refused.
+    context: { provider, reason, imagesHash: imagesHash ?? null },
   });
 
   if (!deviceId) return { count: 0, blocked: false, blockedUntil: null };
@@ -74,6 +82,7 @@ export async function recordContentRefusal(params: {
     severity: 'critical',
     deviceId,
     callerIp,
+    reference,
     context: {
       refusals: count,
       windowHours: REFUSAL_WINDOW_HOURS,

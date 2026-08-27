@@ -157,22 +157,55 @@ not eat into a user's daily allowance.
 
 ## Audit trail
 
-`audit_event` records what happened to a device and why: refusals, blocks,
-invalid images, quota exhaustion. It is separate from `request_log`, which
-answers "what did this cost"; this answers "what happened to this user" — the
-question a support conversation starts from, and the one a future automated
-support agent will need to answer.
+`audit_event` records every action and how the gateway answered. It is
+separate from `request_log`, which answers "what did this cost"; this answers
+"what did this caller DO" — where a support conversation starts, and what a
+future automated support agent will need.
 
-Two rules hold it together:
-1. **Never store user content.** Reasons and counts only — no image bytes, no
-   extracted plan text. An audit trail that accumulated the very material it
-   was recording refusals of would become the liability it exists to avoid.
-2. **Never throw.** Auditing runs alongside a user's request; a logging failure
-   must not become their error.
+**Coverage is total; content is not.** These are two different decisions and
+conflating them causes confusion, so stated separately:
 
-`deviceTimeline(deviceId)` returns a device's history newest-first, and the
-`reference` on a 5xx correlates a user's "it failed, code abc-123" with the
-exact row.
+**Which events — everything.** Registrations, revocations, authentication
+outcomes (success and failure), invalid requests, invalid images, rate
+limiting, quota exhaustion, content refusals, blocks, mutations, and
+successful extractions. An audit that records only failures cannot answer
+"what was this user doing before it broke".
+
+**Which fields — everything except two narrow categories**, excluded for legal
+reasons rather than tidiness:
+
+1. **Image bytes.** Persisting content a safety filter refused would mean the
+   gateway now *stores* the material it declined to process. For the category
+   of content that filter exists to catch, that converts a refusal into
+   hosting.
+2. **Extracted plan text** — patient names, prescribed foods. Health data,
+   *dado pessoal sensível* under LGPD Art. 5 II. Audit tables are the ones
+   nobody ever deletes, so copying plan content here would quietly turn the log
+   into a medical record carrying its own retention, consent and erasure
+   obligations.
+
+**A hash replaces them.** `imagesHash` (SHA-256, already computed for the cache
+key) is recorded on refusals, failures and successes. It answers the questions
+an investigation actually asks — has this exact image been submitted before, by
+how many devices, how often — without holding one byte of it. One device
+sending many different refused images is a person with a bad camera; one image
+arriving from twenty devices is a campaign, and only `sightingsOfHash` tells
+them apart.
+
+Everything else IS recorded: who, when, from where, endpoint, method, status,
+duration, user agent, image dimensions and sizes, declared vs actual format,
+refusal reasons, provider and model, cost, and **before/after for every
+mutation** — a log saying only "the factor is now 0.5" cannot tell you whether
+anything changed, which is the point of an audit.
+
+**Never throw.** Auditing runs alongside a user's request; a logging failure
+must not become their error.
+
+Queries for support:
+- `deviceTimeline(deviceId)` — one device's history, newest first.
+- `eventsForReference(id)` — every event of one request. The id is echoed to
+  the client in `x-request-id`, so "it failed, code abc-123" resolves exactly.
+- `sightingsOfHash(hash)` — every device that submitted one image.
 
 ## Application security
 
