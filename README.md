@@ -24,8 +24,13 @@ custo.
 **v2.** A orquestração de IA foi movida para o `ai-gateway/`, um serviço Node/TS
 que esconde as chaves, abstrai providers (Gemini, OpenAI, Anthropic) atrás de
 uma interface única, faz fallback quando o primário falha, valida o output
-(Zod + loop de reparo) e mede custo/latência por request. O app usa o gateway
-quando configurado e cai no caminho Gemini-direto como fallback.
+(Zod + loop de reparo) e mede custo/latência por request.
+
+O caminho Gemini-direto **não existe mais como fallback** — foi removido, não
+desativado. Manter um atalho que chama a API do provider a partir do celular
+preservaria exatamente a exposição de key que motivou a v2, e um fallback assim
+é acionado justamente quando algo já deu errado, que é o pior momento para
+degradar para o modo menos seguro. Hoje o app fala só com o gateway.
 
 ---
 
@@ -117,9 +122,13 @@ do Postgres e cliente Redis.
   uma vez. Quando o Zod reprova (enum inválido, campo faltando, JSON malformado),
   o reparo reenvia só o texto quebrado e o erro de validação. Corrige a forma do
   JSON, não a leitura da imagem.
-- **Fallback distingue erro retryável de fail-fast.** Timeout/5xx/429 → próximo
+- **Fallback distingue três casos, não dois.** Timeout/5xx/429 → próximo
   provider. 4xx → falha imediata, para não repetir um request inválido contra a
-  quota de outro provider.
+  quota de outro provider. **Recusa por conteúdo → para a cadeia inteira**: é um
+  veredito sobre a imagem, não uma falha do provider, e todo provider aplica
+  política equivalente. Insistir só distribuiria o mesmo material por todas as
+  contas, pagando cada recusa — que era exatamente o comportamento antigo,
+  quando um safety block vinha marcado como retryável.
 - **Duas credenciais, com papéis diferentes.** A chave do app (`x-api-key`) diz
   "isto é o DailyNutry" — viaja dentro do binário, então é um portão fraco, não
   uma identidade. O token de dispositivo (`Bearer`) diz "isto é a instalação
@@ -150,6 +159,7 @@ npm run dev                     # http://localhost:4000
 
 # App
 cd ../dailynutry-app
+cp .env.example .env            # em dev, pode deixar a URL vazia
 npm install
 npm start
 ```
@@ -159,10 +169,21 @@ Postgres deixou de ser opcional: `device`, `yield_override`, `audit_event` e
 registro de dispositivo responde 503 em vez de emitir um token que o gateway não
 teria como verificar nem revogar depois.
 
-No app, **Configurações → Gateway de IA**: informe a URL (ex.:
-`http://SEU_IP:4000`) e o `x-api-key`. Se preenchido, o app usa o gateway; senão
-cai no Gemini direto. O token de dispositivo é obtido sozinho na primeira
-chamada e guardado no keychain/keystore — não há nada a configurar.
+A conexão do app é **configuração de build**, não de tela: `EXPO_PUBLIC_GATEWAY_URL`
+e `EXPO_PUBLIC_GATEWAY_API_KEY` em [`dailynutry-app/.env`](dailynutry-app/.env.example).
+Em desenvolvimento dá para deixar a URL vazia — o app deriva o IP da máquina
+pelo Expo, então um celular no mesmo Wi-Fi conecta sem configurar nada. Em build
+de produção a URL é obrigatória e precisa ser `https://`; sem ela o build falha,
+em vez de apontar silenciosamente para `localhost`.
+
+Nada disso é segredo: o Expo injeta todo `EXPO_PUBLIC_*` no bundle em tempo de
+build, então esses valores viajam dentro do binário. Por isso a `x-api-key`
+identifica o app, não um usuário — quem carrega a identidade é o token de
+dispositivo, obtido sozinho na primeira chamada e guardado no keychain/keystore,
+sem nada a configurar.
+
+A tela **Configurações** cuida do que é preferência do usuário: escolha do
+modelo e limpeza de dados.
 
 Cada resposta traz, em `meta`: `attempts` (trace por provider), `fallbackReason`
 quando um fallback respondeu, `repairs`, `cost` e `latencyMs`.
