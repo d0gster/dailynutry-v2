@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 
 /**
@@ -12,15 +12,36 @@ import { NextResponse } from 'next/server';
  */
 
 /**
+ * Chave aleatória por processo, usada só para comparar segredos.
+ *
+ * Nunca é persistida, transmitida nem derivada de nada — existe apenas
+ * enquanto o processo vive, e some com ele.
+ */
+const COMPARISON_KEY = randomBytes(32);
+
+/**
  * Compares two secrets without leaking their contents through timing.
  *
- * Both sides are hashed first so the buffers are always the same length: a
- * plain `timingSafeEqual` throws on length mismatch, and that throw would
- * itself reveal the expected key's length.
+ * Both sides are reduced to a fixed-length digest first: a plain
+ * `timingSafeEqual` throws on length mismatch, and that throw would itself
+ * reveal the expected key's length.
+ *
+ * The digest is an HMAC under a random per-process key — the "double HMAC"
+ * comparison — rather than a bare SHA-256. Bare hashing was equivalent in
+ * practice here (nothing is stored, and both values are already in memory),
+ * but the digests were then deterministic and computable by anyone who could
+ * guess a candidate key. Keying them with a secret the process invented at
+ * startup removes that: the digests are meaningless outside this process, and
+ * the comparison still runs in constant time.
+ *
+ * This is also what CodeQL's `js/insufficient-password-hash` was pointing at.
+ * The rule reads a fast hash near credentials as password storage, which this
+ * is not — but the keyed construction is the canonical idiom for the job, so
+ * the alert is answered by using the better primitive rather than dismissed.
  */
 function secretsMatch(provided: string, expected: string): boolean {
-  const a = createHash('sha256').update(provided).digest();
-  const b = createHash('sha256').update(expected).digest();
+  const a = createHmac('sha256', COMPARISON_KEY).update(provided).digest();
+  const b = createHmac('sha256', COMPARISON_KEY).update(expected).digest();
   return timingSafeEqual(a, b);
 }
 

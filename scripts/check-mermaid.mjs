@@ -59,8 +59,17 @@ md.split('```mermaid').slice(1).forEach((chunk, index) => {
     // 2. Rótulos de aresta |...| não declaram nó.
     linha = linha.replace(/\|[^|]*\|/g, ' ');
 
-    // 3. Setas.
-    linha = linha.replace(/[-=.]+>|<[-=.]+|[-=.]{2,}/g, ' ');
+    // 3. Tudo que não é caractere de identificador vira espaço — setas
+    //    (`-->`, `==>`, `-.->`), dois-pontos, o que aparecer.
+    //
+    //    A versão anterior enumerava as formas de seta, e o padrão resultante
+    //    casava `-->`. O CodeQL leu aquilo como um filtro de comentário HTML
+    //    mal feito (js/bad-tag-filter) e abriu um alerta high. Era falso
+    //    positivo — aqui não há HTML nem entrada não confiável, só o README do
+    //    próprio repositório — mas descrever o que se QUER manter, em vez de
+    //    enumerar o que se quer remover, é mais simples e não se parece com
+    //    coisa nenhuma.
+    linha = linha.replace(/[^A-Za-z0-9_]+/g, ' ');
 
     // O que sobrou são referências peladas.
     for (const m of linha.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
