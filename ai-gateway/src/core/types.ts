@@ -80,3 +80,27 @@ export class ProviderError extends Error {
     this.name = 'ProviderError';
   }
 }
+
+/**
+ * The provider refused the INPUT on content-safety grounds.
+ *
+ * Deliberately not a `ProviderError`: that class answers "did this provider
+ * fail, and is it worth trying another one?", and here the answer to the
+ * second half is emphatically no. A safety refusal is a verdict about the
+ * content, not a hiccup — the next provider will refuse the same bytes, so
+ * falling through the chain just forwards material we already know is
+ * unacceptable to every vendor we have an account with, and pays for the
+ * privilege each time.
+ *
+ * It stops the chain, returns 422, and is recorded against the device.
+ */
+export class ContentRejectedError extends Error {
+  constructor(
+    readonly provider: ProviderName,
+    /** The provider's own reason code, when it gives one. */
+    readonly reason: string,
+  ) {
+    super(`${provider} refused the image content (${reason})`);
+    this.name = 'ContentRejectedError';
+  }
+}

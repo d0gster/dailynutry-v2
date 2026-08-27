@@ -7,9 +7,11 @@ import { enrichPlan } from '@/core/enrichment';
 import { EXTRACTION_SYSTEM_PROMPT } from '@/core/prompt';
 import { estimateCost, addUsage } from '@/core/cost';
 import { PRICING_VERSION } from '@/core/pricing';
-import { ProviderError } from '@/core/types';
+import { ProviderError, ContentRejectedError } from '@/core/types';
 import { resolveCaller } from '@/core/device-auth';
 import { serverError } from '@/core/errors';
+import { validateImage } from '@/core/image-validation';
+import { recordContentRefusal } from '@/core/content-policy';
 import {
   enforceContentLength,
   MAX_IMAGE_BASE64_CHARS,
@@ -23,6 +25,8 @@ import {
   rateLimitHeaders,
 } from '@/cache/redis';
 import { persistRequestLog } from '@/db/request-log';
+import { recordAuditEvent } from '@/db/audit';
+import { refundQuota } from '@/db/device';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -102,7 +106,45 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const images = body.images;
+  // ── Prove each image IS an image, before it costs a provider call. ───────
+  //    The declared mimeType is the caller's claim; only the bytes settle it.
+  //    Validation also strips EXIF, so a photo of a printed sheet stops
+  //    carrying the GPS of the room it was taken in to a third-party provider.
+  const checked = body.images.map((img) => validateImage(img.base64, img.mimeType));
+  const rejected = checked.flatMap((result, index) =>
+    result.ok ? [] : [{ index, reason: result.reason, detail: result.detail }],
+  );
+
+  if (rejected.length > 0) {
+    // Nothing was sent to a provider, so nothing was spent. Quota is consumed
+    // at authentication (that ordering is what makes it unraceable), so it has
+    // to be handed back here — otherwise a blurry photo would silently cost a
+    // user one of their day's extractions.
+    if (auth.caller.deviceId) await refundQuota(auth.caller.deviceId);
+
+    // Still recorded: one malformed image is an accident, a stream of them is
+    // someone testing what the gateway will forward.
+    await recordAuditEvent({
+      event: 'image_invalid',
+      severity: 'warning',
+      deviceId: auth.caller.deviceId,
+      callerIp: auth.caller.identity,
+      context: { reasons: rejected.map((r) => r.reason), imageCount: body.images.length },
+    });
+
+    return NextResponse.json(
+      { error: 'One or more images were rejected', rejected },
+      { status: 422, headers: limitHeaders },
+    );
+  }
+
+  const images = checked.map((result) => {
+    if (!result.ok) throw new Error('unreachable: rejections returned above');
+    return { base64: result.image.base64, mimeType: result.image.mimeType };
+  });
+
+  // Hashing the SANITISED bytes, so two photos differing only in EXIF share a
+  // cache entry instead of paying for the same extraction twice.
   const baseCacheKey = imagesHash(images);
   const cacheKey = body.overrideModel
     ? `${baseCacheKey}:model:${body.overrideModel}`
@@ -206,6 +248,47 @@ export async function POST(req: NextRequest) {
       { headers: limitHeaders },
     );
   } catch (err) {
+    // A content refusal is a verdict about the input, not a gateway failure.
+    // It stops here rather than reaching the generic 500 path: the caller gets
+    // a 422 they can act on, and the device's refusal count moves — which is
+    // what eventually bars someone probing what the gateway will forward.
+    if (err instanceof ContentRejectedError) {
+      const outcome = await recordContentRefusal({
+        deviceId: auth.caller.deviceId,
+        callerIp: auth.caller.identity,
+        provider: err.provider,
+        reason: err.reason,
+      });
+
+      await persistRequestLog({
+        success: false,
+        providerUsed: err.provider,
+        model: null,
+        cacheHit: false,
+        imageCount: images.length,
+        inputTokens: 0,
+        cachedTokens: 0,
+        outputTokens: 0,
+        estimatedUsd: null,
+        pricingVersion: PRICING_VERSION,
+        latencyMs: Date.now() - started,
+        attempts: [],
+        repairs: [],
+        error: `content_rejected: ${err.reason}`,
+      });
+
+      return NextResponse.json(
+        {
+          error: 'This image was rejected by the content filter',
+          detail: outcome.blocked
+            ? 'Repeated rejections have temporarily blocked this device.'
+            : 'Send a photo of a printed diet plan.',
+          blocked: outcome.blocked,
+        },
+        { status: 422, headers: limitHeaders },
+      );
+    }
+
     const isGuardrail = err instanceof GuardrailError;
     const status = err instanceof ProviderError && !err.retryable ? 502 : 500;
     await persistRequestLog({

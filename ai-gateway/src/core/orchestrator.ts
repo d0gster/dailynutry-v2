@@ -4,6 +4,7 @@ import {
   type VisionExtractParams,
   type ProviderName,
   ProviderError,
+  ContentRejectedError,
 } from './types';
 
 export interface AttemptLog {
@@ -59,8 +60,25 @@ export async function runExtraction(
         fallbackReason: attempts.length > 1 ? firstFailure : undefined,
       };
     } catch (err) {
-      const retryable = err instanceof ProviderError ? err.retryable : false;
       const message = (err as Error).message;
+
+      // A content refusal ends the whole chain immediately. Every provider
+      // enforces comparable policies, so the next one would refuse the same
+      // bytes — falling through would just forward material we already know is
+      // unacceptable to each vendor in turn, paying for every rejection.
+      if (err instanceof ContentRejectedError) {
+        attempts.push({
+          provider: provider.name,
+          model: provider.model,
+          ok: false,
+          latencyMs: Date.now() - start,
+          error: message,
+          retryable: false,
+        });
+        throw err;
+      }
+
+      const retryable = err instanceof ProviderError ? err.retryable : false;
       attempts.push({
         provider: provider.name,
         model: provider.model,

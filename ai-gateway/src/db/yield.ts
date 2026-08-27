@@ -58,8 +58,20 @@ export async function searchYield(
  * Resolve many food names to their best yield factor in a single query.
  *
  * Enriching a diet plan needs a factor per food; asking for them one at a time
- * made the extraction wait on serial database round-trips. `DISTINCT ON` keeps
- * the shortest (closest) match per requested name.
+ * made the extraction wait on serial database round-trips.
+ *
+ * Matching runs the OPPOSITE way from `searchYield`, and the difference is the
+ * whole point. There, a person types a fragment into a search box, so the
+ * fragment is looked for inside the factor names. Here the input is a full
+ * prescribed food name — "Frango peito grelhado" — and the factor name is the
+ * short one — "frango peito". Searching for the long string inside the short
+ * one finds nothing, which is why plans came back with no yield factors at all
+ * and the shopping list never computed a raw purchase quantity.
+ *
+ * The reverse direction is kept as a fallback for the case where the plan is
+ * the terser of the two ("Frango" against "frango peito"), and the ordering
+ * prefers the most specific match: factor-inside-food first, then the longest
+ * factor name, so "frango peito" wins over a bare "frango".
  *
  * Returns a map keyed by the ORIGINAL name passed in. Names with no match are
  * absent. Never throws — returns an empty map if the DB is unavailable.
@@ -82,11 +94,15 @@ export async function searchYieldBatch(
               CASE WHEN o.factor IS NULL THEN y.source ELSE 'usuario' END AS source,
               y.notes
          FROM unnest($1::text[]) AS q(orig)
-         JOIN yield_factor y ON y.name ILIKE '%' || btrim(q.orig) || '%'
+         JOIN yield_factor y
+           ON btrim(q.orig) ILIKE '%' || y.name || '%'
+           OR y.name ILIKE '%' || btrim(q.orig) || '%'
          LEFT JOIN yield_override o
                 ON o.yield_factor_id = y.id
                AND o.device_id = $2::uuid
-        ORDER BY q.orig, length(y.name) ASC`,
+        ORDER BY q.orig,
+                 CASE WHEN btrim(q.orig) ILIKE '%' || y.name || '%' THEN 0 ELSE 1 END,
+                 length(y.name) DESC`,
       [[...new Set(names)], deviceId],
     );
     for (const { query_name, ...factor } of rows) matches.set(query_name, factor);

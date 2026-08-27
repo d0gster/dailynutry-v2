@@ -99,6 +99,81 @@ acceptance is re-justified. `ai-gateway` has no accepted risks: it is at
 project locally before committing — it's the same gate CI runs, just faster
 to iterate on.
 
+## Untrusted input: images
+
+Everything reaching `/api/extract` came from a camera or a gallery picker, so
+it is whatever the sender chose to send. The declared `mimeType` is a claim by
+the client and is never taken at face value.
+
+**Before any provider call costs money** (`ai-gateway/src/core/image-validation.ts`):
+- **Magic bytes** decide the real format, and a declared type that disagrees
+  with the bytes is refused outright.
+- **Dimensions** are read from the JPEG frame header / PNG IHDR and bounded, so
+  a header declaring gigapixels is rejected rather than forwarded.
+- **EXIF is stripped.** This is a privacy control, not an attack control: a
+  phone photo of a printed sheet carries the GPS of the room it was taken in,
+  and forwarding it hands a third-party LLM provider the user's home address
+  for no benefit. Removing the APP1 segment needs no re-encode, so the pixels
+  come out byte-identical.
+
+No library is used, deliberately. `sharp` (the strongest option, since it
+re-encodes) needs an install script that `.npmrc` blocks, and its releases are
+routinely newer than the cooldown floor; `image-size` is the package already in
+`accepted-risk.json` for denial-of-service in its own parsers; `file-type`
+identifies formats but not dimensions, so the header walk would be needed
+anyway. Since the walk is required regardless, magic bytes come nearly free
+inside it.
+
+**What is deliberately NOT defended here.** These images are never stored,
+never served, and never executed — they are base64 in a request, forwarded to a
+provider, then dropped. That removes the classic file-upload risk class
+(polyglot web shells, path traversal on write, browser content sniffing), all
+of which need the file to be written and later served. Prompt injection through
+text rendered *inside* an image is real and no byte-level check can see it; it
+is contained downstream by the Zod schema constraining what the model may
+return.
+
+## Untrusted input: content refusals
+
+When a provider refuses an image on content-safety grounds, that is a verdict
+about the input, not a transient failure. It used to be raised as a retryable
+error, which meant the gateway responded by sending the refused content to the
+next provider and then the one after — distributing it across every vendor
+account and paying for each rejection.
+
+It now stops the chain immediately (`ContentRejectedError`), returns 422, and
+is counted against the device. Three refusals within 24 hours block that device
+for 24 hours (`ai-gateway/src/core/content-policy.ts`).
+
+A **timed block**, not revocation, because the costs are asymmetric: a false
+positive on a timed block costs one day and clears itself, while a false
+positive on revocation costs the user the app until a human intervenes. Safety
+classifiers do fire on bad lighting and on innocuous medical imagery, so false
+positives are expected. Support can lift a block early (`unblockDevice`).
+
+Quota is refunded when a request is rejected before any provider call — the
+quota caps spend, and a rejected image costs nothing, so a blurry photo must
+not eat into a user's daily allowance.
+
+## Audit trail
+
+`audit_event` records what happened to a device and why: refusals, blocks,
+invalid images, quota exhaustion. It is separate from `request_log`, which
+answers "what did this cost"; this answers "what happened to this user" — the
+question a support conversation starts from, and the one a future automated
+support agent will need to answer.
+
+Two rules hold it together:
+1. **Never store user content.** Reasons and counts only — no image bytes, no
+   extracted plan text. An audit trail that accumulated the very material it
+   was recording refusals of would become the liability it exists to avoid.
+2. **Never throw.** Auditing runs alongside a user's request; a logging failure
+   must not become their error.
+
+`deviceTimeline(deviceId)` returns a device's history newest-first, and the
+`reference` on a 5xx correlates a user's "it failed, code abc-123" with the
+exact row.
+
 ## Application security
 
 - **Rate limiting** — `ai-gateway/src/cache/redis.ts`. Atomic Redis

@@ -4,11 +4,22 @@ import {
   type VisionExtractParams,
   type TextRepairParams,
   ProviderError,
+  ContentRejectedError,
 } from '@/core/types';
 import { fetchWithTimeout, isRetryableStatus } from '@/core/http';
 import { REPAIR_SYSTEM_PROMPT, buildRepairUserMessage } from '@/core/prompt';
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+
+/** `finishReason` values that mean the content was refused, not that the model
+ *  ran out of room or stopped normally. */
+const REFUSAL_FINISH_REASONS = new Set([
+  'SAFETY',
+  'PROHIBITED_CONTENT',
+  'BLOCKLIST',
+  'SPII',
+  'IMAGE_SAFETY',
+]);
 
 /**
  * Google Gemini adapter (REST, no SDK). Supports both the vision extraction
@@ -65,9 +76,24 @@ export class GeminiProvider implements LLMProvider {
     }
 
     const data = await res.json();
+
+    // Gemini reports a content refusal in two places: `promptFeedback` when it
+    // rejected the INPUT outright, and `finishReason` when it stopped partway.
+    // Both used to arrive here as an empty candidate and were retried against
+    // the next provider — which forwarded the same rejected content onward.
+    // Reading the reason is what lets us stop instead.
+    const blockReason = data.promptFeedback?.blockReason;
+    const finishReason = data.candidates?.[0]?.finishReason;
+    if (blockReason) {
+      throw new ContentRejectedError(this.name, String(blockReason));
+    }
+    if (finishReason && REFUSAL_FINISH_REASONS.has(String(finishReason))) {
+      throw new ContentRejectedError(this.name, String(finishReason));
+    }
+
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) {
-      // Empty candidate (often a safety block) — worth trying another provider.
+      // Empty with no reason given: a genuine hiccup, so the fallback applies.
       throw new ProviderError('Gemini returned an empty response', this.name, true);
     }
 

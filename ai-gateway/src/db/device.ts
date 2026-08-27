@@ -22,7 +22,50 @@ export type DeviceLookup =
   | { status: 'ok'; device: DeviceRow }
   | { status: 'not_found' }
   | { status: 'revoked' }
+  | { status: 'blocked'; expiresAt: Date; reason: string }
+  | { status: 'quota_exceeded' }
   | { status: 'unavailable' };
+
+/**
+ * A live temporary block, folded into the lookup itself.
+ *
+ * Checking it in a separate round-trip would either add latency to every
+ * request or leave a window where quota is spent before the block is noticed.
+ * As a predicate it costs nothing extra and cannot be raced.
+ */
+const NOT_BLOCKED = `NOT EXISTS (
+        SELECT 1 FROM device_block b
+         WHERE b.device_id = device.id AND b.expires_at > now()
+      )`;
+
+/** Distinguishes the reasons a guarded UPDATE matched nothing. */
+async function explainMiss(
+  pool: NonNullable<ReturnType<typeof getPool>>,
+  tokenHash: string,
+): Promise<DeviceLookup> {
+  const { rows } = await pool.query<{
+    id: string;
+    revoked: boolean;
+    quota_used: number;
+    expires_at: Date | null;
+    reason: string | null;
+  }>(
+    `SELECT d.id, d.revoked, d.quota_used, b.expires_at, b.reason
+       FROM device d
+       LEFT JOIN device_block b
+              ON b.device_id = d.id AND b.expires_at > now()
+      WHERE d.token_hash = $1`,
+    [tokenHash],
+  );
+
+  if (rows.length === 0) return { status: 'not_found' };
+  const row = rows[0];
+  if (row.revoked) return { status: 'revoked' };
+  if (row.expires_at) {
+    return { status: 'blocked', expiresAt: row.expires_at, reason: row.reason ?? 'unspecified' };
+  }
+  return { status: 'quota_exceeded' };
+}
 
 /** Tokens are stored hashed, so a database dump yields nothing usable. */
 function hashToken(token: string): string {
@@ -61,6 +104,37 @@ export async function registerDevice(registeredIp: string): Promise<RegisteredDe
 }
 
 /**
+ * Resolves a bearer token to its device WITHOUT touching the daily quota.
+ *
+ * For endpoints that only need to know who is calling — reads, preference
+ * writes — where charging an extraction would be wrong. Only `/api/extract`
+ * should spend quota; see `resolveDeviceAndConsumeQuota`.
+ */
+export async function lookupDevice(token: string): Promise<DeviceLookup> {
+  const pool = getPool();
+  if (!pool) return { status: 'unavailable' };
+
+  try {
+    const tokenHash = hashToken(token);
+    const { rows } = await pool.query<DeviceRow>(
+      `UPDATE device
+          SET last_seen_at = now()
+        WHERE token_hash = $1
+          AND revoked = false
+          AND ${NOT_BLOCKED}
+        RETURNING id, revoked, quota_used`,
+      [tokenHash],
+    );
+
+    if (rows.length > 0) return { status: 'ok', device: rows[0] };
+    return explainMiss(pool, tokenHash);
+  } catch (err) {
+    console.error('[device] lookup failed:', (err as Error).message);
+    return { status: 'unavailable' };
+  }
+}
+
+/**
  * Resolves a bearer token to its device, consuming one unit of daily quota.
  *
  * The lookup and the quota increment are a SINGLE statement on purpose:
@@ -69,6 +143,11 @@ export async function registerDevice(registeredIp: string): Promise<RegisteredDe
  *
  * `quota_date` doubles as the reset mechanism — a request on a new UTC day
  * restarts the counter, so no scheduled job is needed to clear it.
+ *
+ * The WHERE clause is the sole authority on whether the quota allows this
+ * request: a row comes back only when it did. Callers must not re-check the
+ * returned `quota_used` against the cap — that value is POST-increment, so
+ * comparing it would reject the last allowed request of the day.
  */
 export async function resolveDeviceAndConsumeQuota(
   token: string,
@@ -87,6 +166,7 @@ export async function resolveDeviceAndConsumeQuota(
               last_seen_at = now()
         WHERE token_hash = $1
           AND revoked = false
+          AND ${NOT_BLOCKED}
           AND (quota_date <> CURRENT_DATE OR quota_used < $2)
         RETURNING id, revoked, quota_used`,
       [tokenHash, dailyQuota],
@@ -94,19 +174,41 @@ export async function resolveDeviceAndConsumeQuota(
 
     if (rows.length > 0) return { status: 'ok', device: rows[0] };
 
-    // No row updated: the token is unknown, revoked, or out of quota. Tell
-    // those apart with a read, so the caller can return an accurate status.
-    const { rows: existing } = await pool.query<DeviceRow>(
-      `SELECT id, revoked, quota_used FROM device WHERE token_hash = $1`,
-      [tokenHash],
-    );
-
-    if (existing.length === 0) return { status: 'not_found' };
-    if (existing[0].revoked) return { status: 'revoked' };
-    return { status: 'ok', device: { ...existing[0], quota_used: dailyQuota } };
+    // No row updated: unknown, revoked, blocked, or out of quota. Tell those
+    // apart with a read, so the caller can return an accurate status.
+    return explainMiss(pool, tokenHash);
   } catch (err) {
     console.error('[device] lookup failed:', (err as Error).message);
     return { status: 'unavailable' };
+  }
+}
+
+/**
+ * Returns one unit of quota to a device.
+ *
+ * The quota is consumed at authentication, before the request is known to be
+ * servable — that ordering is what makes the check atomic and unraceable. When
+ * the request is then rejected without any provider call (an image that isn't
+ * an image), the user has been charged an extraction that cost nothing, and a
+ * bad photo would eat into their daily allowance. This gives it back.
+ *
+ * `GREATEST(quota_used - 1, 0)` because a refund must never drive the counter
+ * negative, which would hand out free extractions. Guarded on `quota_date` so
+ * a refund arriving after midnight cannot credit a day it was never spent on.
+ */
+export async function refundQuota(deviceId: string): Promise<void> {
+  const pool = getPool();
+  if (!pool) return;
+
+  try {
+    await pool.query(
+      `UPDATE device
+          SET quota_used = GREATEST(quota_used - 1, 0)
+        WHERE id = $1::uuid AND quota_date = CURRENT_DATE`,
+      [deviceId],
+    );
+  } catch (err) {
+    console.error('[device] quota refund failed:', (err as Error).message);
   }
 }
 

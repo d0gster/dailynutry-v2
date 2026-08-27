@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { fakeJpegBase64 } from './helpers/fake-image';
 import { NextRequest } from 'next/server';
 import { POST } from '@/app/api/extract/route';
 import { MAX_IMAGE_BASE64_CHARS, MAX_REQUEST_BYTES } from '@/core/limits';
@@ -18,7 +19,7 @@ function req(body: unknown, headers: Record<string, string> = {}, ip = 'test-def
   });
 }
 
-const validBody = { images: [{ base64: 'AAAA', mimeType: 'image/jpeg' }] };
+const validBody = { images: [{ base64: fakeJpegBase64(), mimeType: 'image/jpeg' }] };
 
 describe('POST /api/extract', () => {
   beforeEach(() => {
@@ -80,7 +81,7 @@ describe('POST /api/extract', () => {
   });
 
   it('rejects more images than the cap allows (400)', async () => {
-    const many = { images: Array.from({ length: 9 }, () => ({ base64: 'AAAA', mimeType: 'image/jpeg' })) };
+    const many = { images: Array.from({ length: 9 }, () => ({ base64: fakeJpegBase64(), mimeType: 'image/jpeg' })) };
     const res = await POST(req(many, { 'x-api-key': KEY }, 'many-images'));
     expect(res.status).toBe(400);
   });

@@ -9,9 +9,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
  * `resolveCaller`, not Postgres itself.
  */
 const resolveDeviceAndConsumeQuota = vi.hoisted(() => vi.fn());
-vi.mock('@/db/device', () => ({ resolveDeviceAndConsumeQuota }));
+const lookupDevice = vi.hoisted(() => vi.fn());
+vi.mock('@/db/device', () => ({ resolveDeviceAndConsumeQuota, lookupDevice }));
 
-const { resolveCaller, DEFAULT_DAILY_QUOTA } = await import('@/core/device-auth');
+const { resolveCaller, identifyCaller, DEFAULT_DAILY_QUOTA } = await import('@/core/device-auth');
 
 const KEY = 'test-gateway-key';
 
@@ -27,6 +28,7 @@ describe('resolveCaller', () => {
     process.env.GATEWAY_API_KEY = KEY;
     delete process.env.REQUIRE_DEVICE_AUTH;
     resolveDeviceAndConsumeQuota.mockReset();
+    lookupDevice.mockReset();
   });
 
   afterEach(() => {
@@ -95,16 +97,29 @@ describe('resolveCaller', () => {
   });
 
   it('rejects when the quota is spent, with a Retry-After', async () => {
-    resolveDeviceAndConsumeQuota.mockResolvedValue({
-      status: 'ok',
-      device: { id: 'dev-1', revoked: false, quota_used: DEFAULT_DAILY_QUOTA },
-    });
+    resolveDeviceAndConsumeQuota.mockResolvedValue({ status: 'quota_exceeded' });
 
     const res = await resolveCaller(request({ authorization: 'Bearer spent' }));
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.response.status).toBe(429);
     expect(Number(res.response.headers.get('Retry-After'))).toBeGreaterThan(0);
+  });
+
+  it('ALLOWS the last request of the day', async () => {
+    // `quota_used` comes back POST-increment, so the final allowed request
+    // reports a count equal to the cap. The SQL WHERE clause is what decides
+    // — a returned row means "allowed". Re-checking the count here used to
+    // reject this request, costing every device one extraction per day.
+    resolveDeviceAndConsumeQuota.mockResolvedValue({
+      status: 'ok',
+      device: { id: 'dev-1', revoked: false, quota_used: DEFAULT_DAILY_QUOTA },
+    });
+
+    const res = await resolveCaller(request({ authorization: 'Bearer last' }));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.caller.deviceId).toBe('dev-1');
   });
 
   // ── The one that matters most ─────────────────────────────────────────────
@@ -116,6 +131,52 @@ describe('resolveCaller', () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     // A DB outage must never turn the gateway into an open, billable endpoint.
+    expect(res.response.status).toBe(503);
+  });
+});
+
+describe('identifyCaller', () => {
+  beforeEach(() => {
+    process.env.GATEWAY_API_KEY = KEY;
+    delete process.env.REQUIRE_DEVICE_AUTH;
+    resolveDeviceAndConsumeQuota.mockReset();
+    lookupDevice.mockReset();
+  });
+
+  afterEach(() => {
+    delete process.env.REQUIRE_DEVICE_AUTH;
+  });
+
+  it('does NOT spend quota — only /api/extract may', async () => {
+    // The quota caps what a leaked token can cost in LLM calls. Charging it for
+    // a yield-factor read burned a user's daily extractions on free requests.
+    lookupDevice.mockResolvedValue({
+      status: 'ok',
+      device: { id: 'dev-1', revoked: false, quota_used: 3 },
+    });
+
+    const res = await identifyCaller(request({ authorization: 'Bearer t' }));
+
+    expect(res.ok).toBe(true);
+    expect(lookupDevice).toHaveBeenCalledOnce();
+    expect(resolveDeviceAndConsumeQuota).not.toHaveBeenCalled();
+  });
+
+  it('still refuses a revoked device', async () => {
+    lookupDevice.mockResolvedValue({ status: 'revoked' });
+
+    const res = await identifyCaller(request({ authorization: 'Bearer revoked' }));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.response.status).toBe(403);
+  });
+
+  it('still FAILS CLOSED when the database is unreachable', async () => {
+    lookupDevice.mockResolvedValue({ status: 'unavailable' });
+
+    const res = await identifyCaller(request({ authorization: 'Bearer any' }));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
     expect(res.response.status).toBe(503);
   });
 });

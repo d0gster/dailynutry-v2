@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { searchYield, setYieldOverride } from '@/db/yield';
 import { z } from 'zod';
-import { requireApiKey, callerIdentity } from '@/core/auth';
-import { resolveCaller } from '@/core/device-auth';
+import { identifyCaller } from '@/core/device-auth';
 import { checkRateLimit, rateLimitHeaders } from '@/cache/redis';
 
 export const runtime = 'nodejs';
@@ -17,10 +16,12 @@ const RATE_WINDOW = 60;
  * also supplied, that device's own corrections are layered over the defaults.
  */
 export async function GET(req: NextRequest) {
-  const unauthorized = requireApiKey(req);
-  if (unauthorized) return unauthorized;
+  // identifyCaller, not resolveCaller: reading a yield factor costs nothing to
+  // serve and must not spend an extraction from the daily quota.
+  const auth = await identifyCaller(req);
+  if (!auth.ok) return auth.response;
 
-  const limit = await checkRateLimit(`yield-read:${callerIdentity(req)}`, READ_LIMIT, RATE_WINDOW);
+  const limit = await checkRateLimit(`yield-read:${auth.caller.identity}`, READ_LIMIT, RATE_WINDOW);
   if (!limit.allowed) {
     return NextResponse.json(
       { error: 'Rate limit exceeded', retryAfterSeconds: limit.retryAfterSeconds },
@@ -30,14 +31,13 @@ export async function GET(req: NextRequest) {
 
   const q = req.nextUrl.searchParams.get('q');
   if (!q || q.trim().length === 0) {
-    return NextResponse.json({ error: 'Missing query parameter "q"' }, { status: 400 });
+    return NextResponse.json(
+      { error: 'Missing query parameter "q"' },
+      { status: 400, headers: rateLimitHeaders(limit) },
+    );
   }
 
-  // Reads stay open to callers without a device token; they just see defaults.
-  const auth = await resolveCaller(req);
-  const deviceId = auth.ok ? auth.caller.deviceId : null;
-
-  const results = await searchYield(q, deviceId);
+  const results = await searchYield(q, auth.caller.deviceId);
   return NextResponse.json({ results }, { headers: rateLimitHeaders(limit) });
 }
 
@@ -56,7 +56,8 @@ const UpdateBody = z.object({
  * other user's numbers.
  */
 export async function PUT(req: NextRequest) {
-  const auth = await resolveCaller(req);
+  // Also identifyCaller: recording a preference is not an extraction.
+  const auth = await identifyCaller(req);
   if (!auth.ok) return auth.response;
 
   const { deviceId } = auth.caller;

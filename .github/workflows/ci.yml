@@ -17,6 +17,27 @@ jobs:
     defaults:
       run:
         working-directory: ai-gateway
+
+    # Real Postgres, because the integration suite exists precisely to cover
+    # what mocking hides: both bugs that reached a running server lived in SQL,
+    # and one of them had a PASSING unit test asserting the wrong number.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: dailynutry
+          POSTGRES_PASSWORD: dailynutry
+          POSTGRES_DB: dailynutry
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U dailynutry"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://dailynutry:dailynutry@localhost:5432/dailynutry
+
     steps:
       - uses: actions/checkout@v5
 
@@ -33,6 +54,10 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+
+      - run: npm run db:init
+      - run: npm run test:integration
+
       - run: npm run build
       - run: npm run supply-chain
 

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireApiKey, callerIdentity } from './auth';
-import { resolveDeviceAndConsumeQuota } from '@/db/device';
+import { resolveDeviceAndConsumeQuota, lookupDevice, type DeviceLookup } from '@/db/device';
 
 /**
  * Resolves WHO is calling.
@@ -52,56 +52,47 @@ function bearerToken(req: Request): string | null {
   return token.length > 0 ? token : null;
 }
 
-export async function resolveCaller(req: Request): Promise<CallerResult> {
-  // ── 1. App-level gate. ────────────────────────────────────────────────────
-  const unauthorized = requireApiKey(req);
-  if (unauthorized) return { ok: false, response: unauthorized };
+function interpret(lookup: DeviceLookup): CallerResult {
+  switch (lookup.status) {
+    // A row came back, so the quota check in SQL already allowed this request.
+    // Re-checking `quota_used` here would reject the last allowed one: the
+    // value is post-increment.
+    case 'ok':
+      return { ok: true, caller: { identity: `device:${lookup.device.id}`, deviceId: lookup.device.id } };
 
-  // ── 2. Device identity. ───────────────────────────────────────────────────
-  const token = bearerToken(req);
-
-  if (!token) {
-    if (deviceAuthRequired()) {
+    case 'quota_exceeded':
       return {
         ok: false,
         response: NextResponse.json(
           {
-            error: 'Device registration required',
-            detail: 'POST /api/auth/register to obtain a device token, then send it as a Bearer token.',
+            error: 'Daily quota exceeded',
+            detail: `This device has used its ${dailyQuota()} extractions for today.`,
           },
-          { status: 401 },
+          { status: 429, headers: { 'Retry-After': String(secondsUntilUtcMidnight()) } },
         ),
       };
-    }
-    // Transition mode: fall back to an IP bucket so there is still a limit.
-    return { ok: true, caller: { identity: callerIdentity(req), deviceId: null } };
-  }
-
-  const lookup = await resolveDeviceAndConsumeQuota(token, dailyQuota());
-
-  switch (lookup.status) {
-    case 'ok': {
-      const quota = dailyQuota();
-      if (lookup.device.quota_used >= quota) {
-        return {
-          ok: false,
-          response: NextResponse.json(
-            {
-              error: 'Daily quota exceeded',
-              detail: `This device has used its ${quota} extractions for today.`,
-            },
-            { status: 429, headers: { 'Retry-After': String(secondsUntilUtcMidnight()) } },
-          ),
-        };
-      }
-      return { ok: true, caller: { identity: `device:${lookup.device.id}`, deviceId: lookup.device.id } };
-    }
 
     case 'revoked':
       return {
         ok: false,
         response: NextResponse.json({ error: 'This device has been revoked' }, { status: 403 }),
       };
+
+    case 'blocked': {
+      const seconds = Math.max(1, Math.ceil((lookup.expiresAt.getTime() - Date.now()) / 1000));
+      return {
+        ok: false,
+        response: NextResponse.json(
+          {
+            error: 'This device is temporarily blocked',
+            detail: 'Access resumes automatically when the block expires.',
+            expiresAt: lookup.expiresAt.toISOString(),
+          },
+          // 403, like revocation: the app must not react by re-registering.
+          { status: 403, headers: { 'Retry-After': String(seconds) } },
+        ),
+      };
+    }
 
     case 'not_found':
       return {
@@ -120,6 +111,65 @@ export async function resolveCaller(req: Request): Promise<CallerResult> {
         ),
       };
   }
+}
+
+/**
+ * Shared front half of both entry points: the app-level gate, then the
+ * question of whether a device token is present at all.
+ *
+ * Returns the token to look up, or a finished CallerResult when there is
+ * nothing to look up (no token, in either mode).
+ */
+function gate(req: Request): { token: string } | CallerResult {
+  const unauthorized = requireApiKey(req);
+  if (unauthorized) return { ok: false, response: unauthorized };
+
+  const token = bearerToken(req);
+  if (token) return { token };
+
+  if (deviceAuthRequired()) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        {
+          error: 'Device registration required',
+          detail: 'POST /api/auth/register to obtain a device token, then send it as a Bearer token.',
+        },
+        { status: 401 },
+      ),
+    };
+  }
+
+  // Transition mode: fall back to an IP bucket so there is still a limit.
+  return { ok: true, caller: { identity: callerIdentity(req), deviceId: null } };
+}
+
+/**
+ * Resolves the caller AND spends one unit of its daily quota.
+ *
+ * Only for `/api/extract`. The quota exists to cap what a leaked token can
+ * cost in LLM calls, so anything that doesn't make one must use
+ * `identifyCaller` instead — otherwise reading a yield factor would charge
+ * the user an extraction.
+ */
+export async function resolveCaller(req: Request): Promise<CallerResult> {
+  const gated = gate(req);
+  if (!('token' in gated)) return gated;
+
+  return interpret(await resolveDeviceAndConsumeQuota(gated.token, dailyQuota()));
+}
+
+/**
+ * Resolves the caller without touching its quota.
+ *
+ * For endpoints that need an identity — to scope a rate limit or a per-device
+ * preference — but cost nothing to serve.
+ */
+export async function identifyCaller(req: Request): Promise<CallerResult> {
+  const gated = gate(req);
+  if (!('token' in gated)) return gated;
+
+  return interpret(await lookupDevice(gated.token));
 }
 
 /** Quota resets on the UTC day boundary, matching `quota_date` in Postgres. */
