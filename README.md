@@ -38,35 +38,53 @@ degradar para o modo menos seguro. Hoje o app fala só com o gateway.
 
 ```mermaid
 flowchart TD
-  App[App React Native] -->|"POST /api/extract<br/>x-api-key + Bearer do dispositivo"| Auth
+  subgraph GW["ai-gateway · Next.js route handler"]
+    Auth["Auth · chave do app + token do dispositivo<br/>consome 1 de quota"] --> RL["Rate-limit por chamador"]
+    RL --> BodyVal{"ENTRADA · Zod<br/>o pedido tem o formato certo?"}
+    BodyVal -->|não| Bad400["400 · pedido malformado"]
+    BodyVal -->|sim| ImgVal{"ENTRADA · os bytes são<br/>mesmo uma imagem?"}
+    ImgVal -->|não| Refuse["422 · devolve a quota<br/>audit: image_invalid"]
+    ImgVal -->|sim| Strip["Remove EXIF · tira o GPS da foto"]
+    Strip --> Cache{"Já vi esta imagem antes?<br/>busca pelo hash"}
 
-  subgraph GW[ai-gateway · Next.js route handler]
-    Auth["Auth: chave do app + token do dispositivo<br/>consome 1 de quota"] --> RL[Rate-limit por chamador]
-    RL --> Valid{"Os bytes são mesmo<br/>uma imagem?"}
-    Valid -->|não| Refuse["422 · devolve a quota<br/>audit: image_invalid"]
-    Valid -->|sim| Strip[Remove EXIF]
-    Strip --> Cache{"Cache<br/>hash da imagem limpa"}
-    Cache -->|miss| Router[Router + Fallback]
-    Cache -->|hit| Enrich
+    Cache -->|"NÃO · imagem nova (miss)"| Router["Router + Fallback"]
+    Cache -->|"SIM · pula a LLM (hit)"| Enrich["Enriquecimento<br/>+ nutrientes da TACO<br/>+ fator cru→pronto"]
 
-    Guard{"Guardrail<br/>passa no Zod?"} -->|sim| SetCache["Grava no cache<br/>plano AINDA NÃO enriquecido"]
+    Guard{"SAÍDA · Zod<br/>o plano que a LLM devolveu<br/>é válido?"} -->|sim| SetCache["Grava no cache<br/>plano AINDA NÃO enriquecido"]
     Rejected["422 · NÃO tenta o próximo provider<br/>audit: content_rejected"]
-    SetCache --> Enrich["Enriquecimento<br/>TACO + rendimento DESTE dispositivo"]
-    Enrich --> Cost[Custo + tokens]
+    SetCache --> Enrich
+    Enrich --> Cost["Anota quanto a chamada custou<br/>tokens × preço"]
     Cost --> Log[("Postgres<br/>request_log + audit_event")]
-    Cost --> Done[Resposta]
+    Cost --> Done["Resposta · o plano que o app mostra"]
   end
 
-  Router ==>|"① extração · com as imagens"| LLM
-  LLM["Gemini → OpenAI → Anthropic<br/>fallback só em falha transitória"] ==> Guard
-  Guard -.->|"② reparo · text-only, até N vezes"| LLM
+  App["App React Native"] -->|"POST /api/extract<br/>x-api-key + Bearer do dispositivo"| Auth
+  Router ==>|"① extração · manda as imagens"| LLM["Gemini → OpenAI → Anthropic"]
+  LLM ==>|"plano em JSON"| Guard
+  Guard -.->|"② reparo · só texto, até N vezes"| LLM
   LLM -->|"recusa por conteúdo"| Rejected
 
   Cache <--> Redis[("Redis")]
 ```
 
+**Dois Zod, em momentos opostos, e é de propósito.** O da ENTRADA roda antes de
+qualquer chamada paga: confere o formato do pedido e se os bytes são mesmo uma
+imagem. O da SAÍDA — o guardrail — só pode rodar depois, porque valida **o plano
+que a LLM produziu**; antes da chamada esse plano não existe, o que existe é uma
+foto. Validar cedo protege o bolso; validar tarde protege o dado.
+
+**`hit` e `miss` são o vocabulário de cache, não acerto e erro.** O losango
+pergunta "já vi esta imagem antes?". *Miss* é a resposta normal na primeira
+importação: imagem nova, precisa ir à LLM. *Hit* é quando a mesma foto volta —
+aí o plano já está guardado e a chamada paga é pulada inteira.
+
+**"Enriquecimento" é enriquecer o dado.** A LLM devolve o que estava escrito na
+foto ("Arroz integral cozido — 120 g"). O enriquecimento acrescenta o que a foto
+não tinha: nutrientes da tabela TACO e o fator de rendimento cru→pronto, que é
+o que permite montar a lista de compras.
+
 **Duas idas à LLM, não uma.** A seta ① leva as imagens para a extração; a ②
-é o loop de reparo do guardrail, uma chamada *text-only* que devolve o JSON
+é o loop de reparo do guardrail, uma chamada *só de texto* que devolve o JSON
 inválido e o erro de validação ao mesmo provider que respondeu, até
 `MAX_REPAIR_ATTEMPTS`. O guardrail não recebe nada do router: ele julga a
 **resposta do provider**, e é por isso que a seta volta.
