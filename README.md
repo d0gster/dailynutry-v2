@@ -32,28 +32,56 @@ quando configurado e cai no caminho Gemini-direto como fallback.
 ## Arquitetura do gateway
 
 ```mermaid
-flowchart LR
-  App[App React Native] -->|POST /api/extract<br/>x-api-key + imagens| GW
+flowchart TD
+  App[App React Native] -->|"POST /api/extract<br/>x-api-key + Bearer do dispositivo"| Auth
 
   subgraph GW[ai-gateway · Next.js route handler]
-    Auth[Auth + rate-limit] --> Cache{Cache<br/>hash da imagem?}
-    Cache -->|hit| Done[Resposta]
+    Auth["Auth: chave do app + token do dispositivo<br/>consome 1 de quota"] --> RL[Rate-limit por chamador]
+    RL --> Valid{"Os bytes são mesmo<br/>uma imagem?"}
+    Valid -->|não| Refuse["422 · devolve a quota<br/>audit: image_invalid"]
+    Valid -->|sim| Strip[Remove EXIF]
+    Strip --> Cache{"Cache<br/>hash da imagem limpa"}
     Cache -->|miss| Router[Router + Fallback]
-    Router --> Guard[Guardrail<br/>Zod + reparo]
-    Guard --> Cost[Custo + tokens]
-    Cost --> Log[(Postgres<br/>request_log)]
-    Cost --> Done
+    Cache -->|hit| Enrich
+
+    Guard{"Guardrail<br/>passa no Zod?"} -->|sim| SetCache["Grava no cache<br/>plano AINDA NÃO enriquecido"]
+    Rejected["422 · NÃO tenta o próximo provider<br/>audit: content_rejected"]
+    SetCache --> Enrich["Enriquecimento<br/>TACO + rendimento DESTE dispositivo"]
+    Enrich --> Cost[Custo + tokens]
+    Cost --> Log[("Postgres<br/>request_log + audit_event")]
+    Cost --> Done[Resposta]
   end
 
-  Router -->|1 primário| Gemini[Gemini]
-  Router -.->|2 fallback| OpenAI[OpenAI]
-  Router -.->|3 fallback| Anthropic[Anthropic]
-  Cache <--> Redis[(Redis)]
+  Router ==>|"① extração · com as imagens"| LLM
+  LLM["Gemini → OpenAI → Anthropic<br/>fallback só em falha transitória"] ==> Guard
+  Guard -.->|"② reparo · text-only, até N vezes"| LLM
+  LLM -->|"recusa por conteúdo"| Rejected
+
+  Cache <--> Redis[("Redis")]
 ```
 
-Por request: auth (`x-api-key`) → rate-limit → cache por hash da imagem →
-router com fallback → guardrail (valida contra Zod; em falha, reparo text-only)
-→ custo (tokens × tabela de preço versionada) → persiste o log e responde.
+**Duas idas à LLM, não uma.** A seta ① leva as imagens para a extração; a ②
+é o loop de reparo do guardrail, uma chamada *text-only* que devolve o JSON
+inválido e o erro de validação ao mesmo provider que respondeu, até
+`MAX_REPAIR_ATTEMPTS`. O guardrail não recebe nada do router: ele julga a
+**resposta do provider**, e é por isso que a seta volta.
+
+**Recusa de conteúdo não é fallback.** Uma falha transitória (503, timeout)
+desce a cadeia para o próximo provider. Uma recusa por política de conteúdo
+para na hora — todo provider aplica política equivalente, então insistir só
+distribuiria o mesmo material por todas as contas, pagando cada recusa.
+
+**O cache guarda o plano antes do enriquecimento.** Enriquecer depende de quem
+chama (cada dispositivo vê as próprias correções de rendimento), então cachear
+o resultado enriquecido serviria os números de um usuário para o seguinte. O
+caro é a extração; enriquecer de novo custa duas queries — por isso o caminho
+de *hit* também passa pelo enriquecimento.
+
+Por request: auth (chave do app + token do dispositivo + quota) → rate-limit →
+validação da imagem (magic bytes, dimensões, EXIF) → cache por hash → router
+com fallback → guardrail (Zod; em falha, reparo text-only) → enriquecimento
+(TACO + rendimento) → custo (tokens × tabela de preço versionada) → persiste
+log e auditoria, e responde.
 
 **Por que Next.js (e não um serviço standalone):** bate a stack de Node/TS +
 Postgres + Redis e coloca o dashboard de observabilidade no mesmo deploy.
@@ -64,12 +92,18 @@ do Postgres e cliente Redis.
 
 | Recurso | Arquivo |
 |---|---|
-| Abstração de providers | [`core/provider.ts`](ai-gateway/src/core/provider.ts) · [`providers/`](ai-gateway/src/providers) |
+| Abstração de providers | [`core/types.ts`](ai-gateway/src/core/types.ts) · [`providers/`](ai-gateway/src/providers) |
 | Fallback entre providers | [`core/orchestrator.ts`](ai-gateway/src/core/orchestrator.ts) · [`core/config.ts`](ai-gateway/src/core/config.ts) |
 | Validação + reparo do output | [`core/guardrail.ts`](ai-gateway/src/core/guardrail.ts) · [`core/schema.ts`](ai-gateway/src/core/schema.ts) |
 | Custo / tokens | [`core/pricing.ts`](ai-gateway/src/core/pricing.ts) · [`core/cost.ts`](ai-gateway/src/core/cost.ts) |
 | Cache + rate-limit | [`cache/redis.ts`](ai-gateway/src/cache/redis.ts) |
+| Auth de dispositivo + quota | [`core/device-auth.ts`](ai-gateway/src/core/device-auth.ts) · [`db/device.ts`](ai-gateway/src/db/device.ts) |
+| Validação de imagem + EXIF | [`core/image-validation.ts`](ai-gateway/src/core/image-validation.ts) |
+| Política de conteúdo + bloqueio | [`core/content-policy.ts`](ai-gateway/src/core/content-policy.ts) · [`db/device-block.ts`](ai-gateway/src/db/device-block.ts) |
+| Enriquecimento TACO / rendimento | [`core/enrichment.ts`](ai-gateway/src/core/enrichment.ts) · [`db/taco.ts`](ai-gateway/src/db/taco.ts) · [`db/yield.ts`](ai-gateway/src/db/yield.ts) |
 | Observabilidade | [`db/request-log.ts`](ai-gateway/src/db/request-log.ts) · [`app/dashboard`](ai-gateway/src/app/dashboard) |
+| Auditoria (suporte / investigação) | [`db/audit.ts`](ai-gateway/src/db/audit.ts) |
+| Pipeline de supply-chain | [`scripts/supply-chain-check.mjs`](scripts/supply-chain-check.mjs) · [`SECURITY.md`](SECURITY.md) |
 
 ---
 
@@ -86,13 +120,20 @@ do Postgres e cliente Redis.
 - **Fallback distingue erro retryável de fail-fast.** Timeout/5xx/429 → próximo
   provider. 4xx → falha imediata, para não repetir um request inválido contra a
   quota de outro provider.
-- **Auth + rate-limit + cache.** Com as chaves no servidor, o gateway passa a
-  arcar com o custo das chamadas; auth e rate-limit limitam o uso, e o cache por
-  hash evita reprocessar a mesma imagem.
+- **Duas credenciais, com papéis diferentes.** A chave do app (`x-api-key`) diz
+  "isto é o DailyNutry" — viaja dentro do binário, então é um portão fraco, não
+  uma identidade. O token de dispositivo (`Bearer`) diz "isto é a instalação
+  #1234": único por install, revogável, com quota diária. Rate-limit e quota
+  penduram no token, então uma chave de app vazada não compra mais extração
+  ilimitada.
 - **Custo é estimativa.** Tabela de preço versionada (`PRICING_VERSION`). Modelo
   sem preço conhecido → custo `null`, em vez de um valor inventado.
-- **Degradação graciosa.** Sem `DATABASE_URL`, os logs vão para stdout. Sem
-  `REDIS_URL`, cache e rate-limit viram no-op. O gateway roda sem infra externa.
+- **Falha aberta e falha fechada são escolhas separadas.** Sem `DATABASE_URL`,
+  os logs vão para stdout. Sem `REDIS_URL`, o cache vira no-op — perder cache
+  custa dinheiro, não segurança. Mas o **rate-limit nunca** vira no-op: sem
+  Redis ele cai num limitador em processo, e quando não consegue decidir, nega.
+  Um limitador que se desliga sozinho ao perder a infra é exatamente o que um
+  atacante provoca de propósito.
 
 ---
 
@@ -103,8 +144,8 @@ do Postgres e cliente Redis.
 cd ai-gateway
 cp .env.example .env            # preencha GEMINI_API_KEY e GATEWAY_API_KEY
 npm install
-docker compose up -d            # opcional: Postgres + Redis
-npm run db:init                 # opcional: cria a tabela request_log
+docker compose up -d            # Postgres + Redis
+npm run db:init                 # cria o schema e popula TACO + rendimentos
 npm run dev                     # http://localhost:4000
 
 # App
@@ -113,9 +154,15 @@ npm install
 npm start
 ```
 
+Postgres deixou de ser opcional: `device`, `yield_override`, `audit_event` e
+`device_block` sustentam auth de dispositivo, quota e auditoria. Sem banco, o
+registro de dispositivo responde 503 em vez de emitir um token que o gateway não
+teria como verificar nem revogar depois.
+
 No app, **Configurações → Gateway de IA**: informe a URL (ex.:
 `http://SEU_IP:4000`) e o `x-api-key`. Se preenchido, o app usa o gateway; senão
-cai no Gemini direto.
+cai no Gemini direto. O token de dispositivo é obtido sozinho na primeira
+chamada e guardado no keychain/keystore — não há nada a configurar.
 
 Cada resposta traz, em `meta`: `attempts` (trace por provider), `fallbackReason`
 quando um fallback respondeu, `repairs`, `cost` e `latencyMs`.
@@ -133,19 +180,33 @@ router e dos guardrails é coberto pelos testes.
 git config core.hooksPath .githooks   # habilita o gate de pre-commit (uma vez)
 ```
 
-O hook em [`.githooks/pre-commit`](.githooks/pre-commit) roda **typecheck + lint
-(+ testes no gateway)** apenas no(s) projeto(s) com mudanças staged, e **bloqueia
-o commit** se algo falhar.
+O hook em [`.githooks/pre-commit`](.githooks/pre-commit) roda typecheck, lint e
+testes apenas no(s) projeto(s) com mudanças staged, e **bloqueia o commit** se
+algo falhar. Quando o `package.json`, o lockfile ou o `.npmrc` mudam, roda
+também o `supply-chain` — só nesse caso, porque ele vai à rede.
 
-- **Gateway:** `npm run typecheck` · `npm run lint` (ESLint + typescript-eslint) ·
-  `npm test` (Vitest — unit dos módulos puros com dados reais + integração da rota,
-  usando test doubles só para condições de erro, nunca dados fabricados).
-- **App:** `npm run typecheck` · `npm run lint` (eslint-config-expo).
+- **Gateway:** `typecheck` · `lint` · `test` (83 unitários, tudo externo
+  mockado) · `test:integration` (48 contra Postgres real).
+- **App:** `typecheck` · `lint` · `test` (18).
+
+**Por que duas suítes.** A unitária é hermética e roda sem Docker. A de
+integração existe porque mock esconde exatamente a costura onde os dois bugs
+reais moraram — um off-by-one de quota e uma direção invertida de busca, ambos
+em SQL. O primeiro tinha teste unitário **verde afirmando o número errado**.
+
+CI em [`.github/workflows/`](.github/workflows): `ci.yml` (ambos os projetos,
+com Postgres em service container), `codeql.yml` (SAST) e
+`dependency-review.yml`. A política de dependências está em
+[`SECURITY.md`](SECURITY.md).
 
 ## Status
 
 - ✅ Provider abstraction + fallback
 - ✅ Guardrails (Zod + reparo)
 - ✅ Custo + observabilidade (Postgres + dashboard)
+- ✅ RAG TACO + normalização cru→pronto, com override por dispositivo
+- ✅ Auth de dispositivo, quota diária, revogação e bloqueio temporário
+- ✅ Validação de imagem, remoção de EXIF e política de conteúdo
+- ✅ Auditoria e pipeline de supply-chain no CI
 - ⏳ Adapters OpenAI/Anthropic implementados, ainda não validados contra key real
-- ⏳ Planejado: RAG (tabela TACO) + normalização cru→pronto
+- ⏳ Ordem de páginas derivada do conteúdo; detecção de "não é plano alimentar"
