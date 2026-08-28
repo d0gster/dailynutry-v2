@@ -93,7 +93,21 @@ acceptance is re-justified. `ai-gateway` has no accepted risks: it is at
   projects, on push/PR to `main` plus a weekly scheduled sweep.
 - `dependency-review.yml` — blocks a PR that introduces a dependency with a
   known high/critical vulnerability or a new copyleft license, before it ever
-  reaches a lockfile on `main`.
+  reaches a lockfile on `main`. Requires the repository's Dependency graph to
+  be enabled.
+
+**Every action is pinned to a full commit SHA**, with the version in a trailing
+comment. `@v4` is a *mutable* tag: whoever controls the action's repository can
+repoint it at any commit, and everyone using the tag runs the new code on their
+next run — with access to the workflow's secrets. It is the same class of attack
+`save-exact=true` addresses for npm, except actions run with more privilege than
+a build dependency does.
+
+To update one, resolve the new SHA with
+`git ls-remote --tags https://github.com/<owner>/<repo>.git`, change the trailing
+version comment to match, and do not revert to a tag. Note that some actions
+(`dependency-review-action`) no longer publish a floating major tag at all, so a
+SHA or an exact version is the only option regardless.
 
 **After adding or updating a dependency**, run `npm run supply-chain` in that
 project locally before committing — it's the same gate CI runs, just faster

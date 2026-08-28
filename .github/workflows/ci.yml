@@ -1,5 +1,19 @@
 name: CI
 
+# ─── Por que as actions estão fixadas por SHA ────────────────────────────────
+# `@v4` é uma tag MUTÁVEL: quem controla o repositório da action pode reapontá-la
+# para qualquer commit, e todo mundo que usa a tag passa a rodar o novo código na
+# próxima execução — com acesso aos secrets do workflow. É a mesma classe de
+# ataque que o `.npmrc` deste projeto trata com `save-exact=true`, e actions
+# rodam com MAIS privilégio que uma dependência de build.
+#
+# O SHA é imutável. O comentário ao lado diz qual versão ele é, para a leitura
+# não virar hexadecimal sem sentido.
+#
+# Para atualizar: pegue o SHA novo com
+#   git ls-remote --tags https://github.com/<owner>/<repo>.git
+# e troque também o comentário. Não volte para a tag.
+
 on:
   push:
     branches: [main]
@@ -39,9 +53,9 @@ jobs:
       DATABASE_URL: postgres://dailynutry:dailynutry@localhost:5432/dailynutry
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
           cache: npm
@@ -67,9 +81,9 @@ jobs:
       run:
         working-directory: dailynutry-app
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
           cache: npm
@@ -85,8 +99,8 @@ jobs:
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
 

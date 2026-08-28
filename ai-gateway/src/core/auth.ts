@@ -34,10 +34,22 @@ const COMPARISON_KEY = randomBytes(32);
  * startup removes that: the digests are meaningless outside this process, and
  * the comparison still runs in constant time.
  *
- * This is also what CodeQL's `js/insufficient-password-hash` was pointing at.
- * The rule reads a fast hash near credentials as password storage, which this
- * is not — but the keyed construction is the canonical idiom for the job, so
- * the alert is answered by using the better primitive rather than dismissed.
+ * CodeQL flags this as `js/insufficient-password-hash`, and the alert is
+ * dismissed as a false positive rather than acted on. The rule wants a slow KDF
+ * (bcrypt/scrypt/argon2) and reads any fast hash near a credential as password
+ * storage. This is not password storage:
+ *
+ *   - `GATEWAY_API_KEY` is a machine credential read from the environment, not
+ *     a user-chosen password, so it has full entropy and nothing to guess;
+ *   - no digest is ever written anywhere, so there is no stored hash for an
+ *     attacker to crack offline — the only place these bytes exist is inside
+ *     this comparison;
+ *   - a slow KDF would run on EVERY request, adding latency and handing anyone
+ *     a cheap denial-of-service, in exchange for protecting against an attack
+ *     that has no surface here.
+ *
+ * Switching to keyed HMAC did not silence the rule (it reads HMAC-SHA256 as
+ * fast too) and was kept anyway, on its own merits.
  */
 function secretsMatch(provided: string, expected: string): boolean {
   const a = createHmac('sha256', COMPARISON_KEY).update(provided).digest();

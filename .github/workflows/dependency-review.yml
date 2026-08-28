@@ -3,6 +3,13 @@ name: Dependency Review
 # Blocks a PR that introduces a dependency with a known high/critical
 # vulnerability, or a new copyleft license — the earliest possible checkpoint,
 # before the package ever reaches a lockfile on main.
+#
+# Exige o Dependency graph ligado no repositório; sem ele a action falha com
+# "Dependency review is not supported on this repository".
+#
+# Actions fixadas por SHA — ver o cabeçalho de ci.yml. Este repositório publica
+# tag major flutuante só até a v3, então a v5 exige `v5.0.0` ou um SHA de
+# qualquer forma.
 on:
   pull_request:
     branches: [main]
@@ -13,8 +20,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
