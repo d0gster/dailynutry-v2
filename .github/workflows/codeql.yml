@@ -3,6 +3,10 @@ name: CodeQL
 # Static analysis (SAST) across both projects' TypeScript/JavaScript.
 # Runs on every push/PR to main plus a weekly sweep, since new advisory
 # patterns can flag code that hasn't changed.
+#
+# Actions fixadas por SHA — ver o cabeçalho de ci.yml para o motivo.
+# A v3 do codeql-action será descontinuada em dezembro/2026 e ainda roda em
+# Node 20; a v4 é a linha atual.
 on:
   push:
     branches: [main]
@@ -18,12 +22,12 @@ jobs:
       security-events: write
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: javascript-typescript
 
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           category: '/language:javascript-typescript'
